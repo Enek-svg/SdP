@@ -1,266 +1,190 @@
-// main.js — conecta Engine + Render, maneja eventos de la interfaz y el bucle en tiempo real.
+// main.js — hilo conductor: une Engine y Render y encadena las pantallas de cada actividad.
 (function () {
   'use strict';
 
-  const Utils = window.Utils;
-  const C = window.Constants;
   const Engine = window.Engine;
   const Render = window.Render;
+  const C = window.Constants;
+  const { round1 } = window.Utils;
 
-  const restored = Engine.restoreState();
-  let state = restored || Engine.createState('libre');
-  let menuOpen = !restored; // reabre el menú solo si no había sesión guardada
-  let pendingScenario = null;
-  let audioCtx = null;
+  let state = null;
 
-  Render.cacheDom();
-  Render.initMap();
+  Render.init();
 
-  function startScenario(scenarioKey) {
-    state = Engine.createState(scenarioKey);
-    menuOpen = false;
-    Render.renderStartOverlay(false);
-    refreshAll();
-  }
-
-  function goToMenu() {
-    menuOpen = true;
-    Render.renderStartOverlay(true);
-  }
-
-  document.querySelectorAll('[data-scenario]').forEach((button) => {
-    button.addEventListener('click', () => {
-      pendingScenario = button.dataset.scenario;
-      Render.renderBriefing(pendingScenario);
-    });
-  });
-  document.getElementById('brief-back-btn').addEventListener('click', () => Render.showMenuStep('select'));
-  document.getElementById('brief-start-btn').addEventListener('click', () => {
-    if (pendingScenario) startScenario(pendingScenario);
-  });
-  document.getElementById('menu-btn').addEventListener('click', goToMenu);
-  document.getElementById('retry-btn').addEventListener('click', () => {
-    startScenario(state.scenarioKey);
-  });
-  document.getElementById('end-menu-btn').addEventListener('click', goToMenu);
-
-  Render.renderStartOverlay(menuOpen);
-
-  // --- sonido (beeps simples con WebAudio, sin ficheros de audio) ---
-  function ensureAudio() {
-    if (!audioCtx) {
-      const AudioContext = window.AudioContext || window.webkitAudioContext;
-      if (AudioContext) audioCtx = new AudioContext();
+  const startCallbacks = {
+    onNew(name) {
+      Engine.clearSave();
+      state = Engine.newGame(name);
+      hub();
+    },
+    onContinue() {
+      state = Engine.load();
+      if (state) hub(); else showStart();
     }
-    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  };
+
+  function showStart() {
+    state = null;
+    Render.renderStart(Boolean(Engine.load()), startCallbacks);
   }
 
-  function beep(frequency, durationMs) {
-    if (!state.soundOn || !audioCtx) return;
-    const oscillator = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    oscillator.frequency.value = frequency;
-    oscillator.type = 'sine';
-    gain.gain.value = 0.05;
-    oscillator.connect(gain);
-    gain.connect(audioCtx.destination);
-    oscillator.start();
-    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + durationMs / 1000);
-    oscillator.stop(audioCtx.currentTime + durationMs / 1000);
-  }
-
-  document.addEventListener('pointerdown', ensureAudio, { once: true });
-
-  // --- selección de grupo y despacho tocando el mapa ---
-  function selectUnit(unitId) {
-    const unit = state.units.find((item) => item.id === unitId);
-    if (!unit || unit.status !== 'free') return;
-    state.selectedUnit = unitId;
-    refreshAll();
-  }
-
-  let dispatchPanelOpen = false;
-  let pendingDispatchCallId = null;
-
-  // Tocar un aviso pendiente abre el panel para elegir qué grupos enviar.
-  function onIncidentClick(callId) {
-    const call = state.calls.find((item) => item.id === callId);
-    if (!call || call.status !== 'pending') return;
-    pendingDispatchCallId = callId;
-    dispatchPanelOpen = true;
-    const freeUnits = state.units.filter((unit) => unit.status === 'free');
-    Render.renderDispatchPanel(call, freeUnits, onDispatchConfirm, onDispatchCancel);
-  }
-
-  function onDispatchConfirm(unitIds) {
-    if (!unitIds.length || !pendingDispatchCallId) return;
-    const result = Engine.dispatchUnits(state, pendingDispatchCallId, unitIds);
-    dispatchPanelOpen = false;
-    pendingDispatchCallId = null;
-    Render.hideDispatchPanel();
-    if (result.ok) {
-      Render.notify(`${result.units.map((unit) => unit.id).join(', ')} en camino a ${result.call.location}.`);
-      beep(660, 120);
+  const hubCallbacks = {
+    onModule(id) {
+      if (id === 'teorico') runExam();
+      else if (id === 'fisico') runPhysical();
+      else runAcademyPractical();
+    },
+    onPracticas: runPracticas,
+    onService: runService,
+    onSuspension() {
+      Engine.serveSuspension(state);
+      hub();
+    },
+    onNewCareer() {
+      Engine.clearSave();
+      showStart();
     }
-    state.selectedUnit = null;
-    refreshAll();
+  };
+
+  function hub() {
+    Engine.save(state);
+    Render.renderHub(state, hubCallbacks);
   }
 
-  function onDispatchCancel() {
-    dispatchPanelOpen = false;
-    pendingDispatchCallId = null;
-    Render.hideDispatchPanel();
+  const noteFrom = (text, neg) => ({ t: text, neg: Boolean(neg) });
+  const isGood = (text) => text.startsWith('Conseguiste') || text.startsWith('Resolviste');
+
+  // --- Academia ---
+  function academyResult(name, score, lines, result, extraHtml) {
+    const notes = lines.map((line) => noteFrom(line));
+    if (result.graduated) notes.push(noteFrom(`Nota media final de la Academia: ${result.final}. ¡Pasas a prácticas!`));
+    if (result.retry) notes.push(noteFrom('No has superado la prueba. Te queda una última convocatoria.', true));
+    if (result.expelled) notes.push(noteFrom('Has agotado las convocatorias.', true));
+    Engine.save(state);
+    Render.renderHeader(state);
+    Render.renderResult({
+      title: result.passed ? (result.graduated ? '¡Te has graduado!' : 'Apto') : result.expelled ? 'No apto: baja en la Academia' : 'No apto',
+      kind: result.passed ? 'good' : 'bad',
+      sections: [{ title: name, score, notes }],
+      extraHtml,
+      button: 'Volver a la Academia'
+    }, hub);
   }
 
-  // El resultado se muestra primero dentro de la escena (con "Continuar"); el
-  // refresco completo (que puede abrir la siguiente escena, si hay otra) se
-  // hace solo cuando el jugador pulsa continuar.
-  function onSceneChoice(callId, optionId) {
-    const result = Engine.resolveScene(state, callId, optionId);
-    if (!result.ok) return;
-    beep(result.failed ? 300 : 880, result.failed ? 260 : 150);
-    Render.showSceneResult({ callId, title: result.title, text: result.text, trustDelta: result.trustDelta, failed: result.failed, chain: result.chain }, () => {
-      refreshAll();
+  function runExam() {
+    const questions = Engine.examQuestions();
+    Render.renderExam(questions, (answers) => {
+      const graded = Engine.gradeExam(questions, answers);
+      const result = Engine.applyAcademy(state, 'teorico', graded.score);
+      academyResult('Examen teórico', graded.score, [`Aciertos: ${graded.correct} de ${graded.total}.`], result, Render.examReviewHtml(questions, answers));
     });
   }
 
-  // Una orden en la escena: actualiza la tensión; si se descontrola, termina sola.
-  function onSceneOrder(callId, orderId) {
-    const result = Engine.applyOrder(state, callId, orderId);
-    if (!result.ok) return;
-    if (result.finished) {
-      beep(300, 260);
-      Render.showSceneResult({ callId, title: result.title, text: result.text, trustDelta: result.trustDelta, failed: true, chain: result.chain }, () => refreshAll());
-      return;
-    }
-    beep(result.mood === 'violent' ? 340 : 620, 90);
-    Render.renderSceneOverlay(state, handlers);
-    Engine.saveState(state);
-  }
-
-  const handlers = { onSelectUnit: selectUnit, onIncidentClick, onSceneChoice, onSceneOrder };
-
-  function refreshAll() {
-    Render.renderAll(state, handlers);
-    if (!menuOpen) Engine.saveState(state);
-  }
-
-  // --- clic en el mapa (fuera de un marcador): mandar el grupo seleccionado de patrulla ---
-  const map = Render.getMap();
-  map.on('click', (event) => {
-    if (!state.selectedUnit) return;
-    const unit = state.units.find((item) => item.id === state.selectedUnit);
-    if (!unit || unit.status !== 'free') return;
-    const percent = Utils.latLngToPercent(C.mapBounds, event.latlng.lat, event.latlng.lng);
-    Engine.startPatrol(state, unit.id, percent.x, percent.y);
-    Render.notify(`${unit.id} en patrulla hacia la zona indicada.`);
-    refreshAll();
-  });
-
-  // --- botones fijos ---
-  document.getElementById('new-call').addEventListener('click', () => {
-    const result = Engine.generateRandomCall(state);
-    if (!result.ok) {
-      Render.notify('Hay demasiados avisos pendientes. Espera a que se resuelvan algunos.');
-    } else {
-      Render.notify(`Aviso ${result.call.id} registrado en ${result.call.location}.`);
-      beep(520, 120);
-    }
-    refreshAll();
-  });
-
-  document.getElementById('reset-turn').addEventListener('click', () => {
-    Engine.resetTurn(state, state.scenarioKey);
-    refreshAll();
-  });
-
-  document.getElementById('save-session').addEventListener('click', () => {
-    Engine.saveState(state);
-    Render.notify('Sesión guardada en el navegador.');
-  });
-
-  document.getElementById('difficulty-select').addEventListener('change', (event) => {
-    Engine.setDifficulty(state, event.target.value);
-    refreshAll();
-  });
-
-  document.getElementById('advance').addEventListener('click', () => {
-    const events = Engine.tick(state, 15);
-    handleEvents(events);
-    refreshAll();
-  });
-
-  document.getElementById('pause-toggle').addEventListener('click', () => {
-    state.paused = !state.paused;
-    Render.renderSpeedControls(state);
-    Engine.saveState(state);
-  });
-
-  document.getElementById('sound-toggle').addEventListener('click', () => {
-    ensureAudio();
-    state.soundOn = !state.soundOn;
-    Render.renderSpeedControls(state);
-    Engine.saveState(state);
-  });
-
-  document.querySelectorAll('[data-speed]').forEach((button) => {
-    button.addEventListener('click', () => {
-      state.speed = Number(button.dataset.speed);
-      Render.renderSpeedControls(state);
-      Engine.saveState(state);
-    });
-  });
-
-  document.getElementById('zoom-in').addEventListener('click', () => Render.zoomIn());
-  document.getElementById('zoom-out').addEventListener('click', () => Render.zoomOut());
-
-  function handleEvents(events) {
-    events.forEach((event) => {
-      if (event.type === 'arrived') {
-        beep(740, 160);
-      } else if (event.type === 'worsen') {
-        Render.notify('Un aviso desatendido se ha agravado.');
-        beep(400, 140);
-      } else if (event.type === 'spawn') {
-        beep(520, 120);
-      } else if (event.type === 'gameover') {
-        beep(event.won ? 920 : 220, event.won ? 260 : 400);
-      }
+  function runPhysical() {
+    Render.renderRun((distance) => {
+      const score = Engine.gradeRun(distance);
+      const result = Engine.applyAcademy(state, 'fisico', score);
+      academyResult('Prueba física', score, [`Recorriste ${Math.round(distance)} metros en el tiempo límite.`], result);
     });
   }
 
-  // --- bucle de animación en tiempo real ---
-  let lastTimestamp = null;
-
-  function loop(timestamp) {
-    if (lastTimestamp === null) lastTimestamp = timestamp;
-    const deltaRealSeconds = Math.min((timestamp - lastTimestamp) / 1000, 0.25);
-    lastTimestamp = timestamp;
-
-    const sceneOpen = dispatchPanelOpen || state.calls.some((call) => call.status === 'awaiting_decision');
-    if (!state.paused && !menuOpen && !sceneOpen) {
-      const deltaGameMinutes = deltaRealSeconds * C.BASE_GAME_MINUTES_PER_SECOND * state.speed;
-      const events = Engine.tick(state, deltaGameMinutes);
-      if (events.length) {
-        handleEvents(events);
-        refreshAll();
-      } else {
-        Render.updatePositions(state);
-        Render.renderClockOnly(state);
-        Render.renderObjective(state);
-      }
-    }
-    window.requestAnimationFrame(loop);
+  // Aviso completo: llamada → refuerzos → escena en tiempo real → informe.
+  function runIncident({ label, tip }, onFinish) {
+    const incident = Engine.pickIncident(state);
+    Render.renderCall({ incident, label, tip }, (support) => {
+      Render.renderScene({ incident, support, label }, (outcome) => {
+        const sceneGrade = Engine.gradeScene(incident, support, outcome);
+        Render.renderReport({ incident, outcome, label }, (report) => {
+          const reportGrade = Engine.gradeReport(sceneGrade.truth, report);
+          onFinish({ incident, support, outcome, sceneGrade, reportGrade });
+        });
+      });
+    });
   }
 
-  window.requestAnimationFrame(loop);
+  function incidentSections(data, avgTitle, avg) {
+    const sections = [
+      { title: 'Intervención', score: data.sceneGrade.score, notes: data.sceneGrade.notes.map((text) => noteFrom(text, !isGood(text))) },
+      { title: 'Informe', score: data.reportGrade.score, notes: (data.reportGrade.notes.length ? data.reportGrade.notes : ['Informe correcto y completo.']).map((text) => noteFrom(text, data.reportGrade.notes.length > 0)) }
+    ];
+    if (avgTitle) sections.push({ title: avgTitle, score: avg, notes: [] });
+    return sections;
+  }
 
-  // Autoguardado periódico (además de guardar en cada evento discreto).
-  window.setInterval(() => { if (!menuOpen) Engine.saveState(state); }, 4000);
-  window.addEventListener('beforeunload', () => { if (!menuOpen) Engine.saveState(state); });
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden' && !menuOpen) Engine.saveState(state);
-  });
+  const avgOf = (data) => round1((data.sceneGrade.score + data.reportGrade.score) / 2);
 
-  refreshAll();
+  function runAcademyPractical() {
+    runIncident({
+      label: 'Prueba práctica',
+      tip: 'Instructor: tu patrulla acude siempre. Pide apoyo solo si la gravedad lo exige: un exceso de fuerza también penaliza. En la escena, alterna Mantener línea y Dialogar y evita Dispersar.'
+    }, (data) => {
+      const avg = avgOf(data);
+      const result = Engine.applyAcademy(state, 'practico', avg);
+      Engine.save(state);
+      Render.renderHeader(state);
+      const extra = [];
+      if (data.reportGrade.concealed) extra.push(noteFrom('Ocultaste información en el informe. En el servicio real esto sería una falta muy grave.', true));
+      if (result.graduated) extra.push(noteFrom(`Nota media final de la Academia: ${result.final}. ¡Pasas a prácticas!`));
+      if (result.retry) extra.push(noteFrom('Te queda una última convocatoria.', true));
+      if (result.expelled) extra.push(noteFrom('Has agotado las convocatorias.', true));
+      const sections = incidentSections(data, 'Nota de la prueba práctica', avg);
+      sections[2].notes = extra;
+      Render.renderResult({
+        title: result.passed ? (result.graduated ? '¡Te has graduado!' : 'Apto') : result.expelled ? 'No apto: baja en la Academia' : 'No apto',
+        kind: result.passed ? 'good' : 'bad',
+        sections,
+        button: 'Volver a la Academia'
+      }, hub);
+    });
+  }
+
+  // --- Prácticas ---
+  function runPracticas() {
+    runIncident({
+      label: 'Prácticas',
+      tip: 'Tutor: observo cómo respondes. Pide refuerzos acordes a la gravedad y redacta un informe sincero.'
+    }, (data) => {
+      const avg = avgOf(data);
+      const result = Engine.applyPractica(state, avg);
+      Engine.save(state);
+      Render.renderHeader(state);
+      const extra = [];
+      if (result.done && result.passed) extra.push(noteFrom(`Media de prácticas ${result.avg}. Ya eres Policía con plaza.`));
+      if (result.done && result.retry) extra.push(noteFrom(`Media de prácticas ${result.avg}: no llegas al 5. Repites el periodo.`, true));
+      if (result.done && result.expelled) extra.push(noteFrom('No superas las prácticas en la segunda oportunidad.', true));
+      const sections = incidentSections(data, 'Evaluación del tutor', avg);
+      sections[2].notes = extra;
+      Render.renderResult({
+        title: result.done ? (result.passed ? 'Prácticas superadas' : result.expelled ? 'Baja en prácticas' : 'Prácticas no superadas') : 'Servicio evaluado',
+        kind: avg >= Engine.PASS ? 'good' : 'bad',
+        sections,
+        button: 'Continuar'
+      }, hub);
+    });
+  }
+
+  // --- Servicio ---
+  function runService() {
+    runIncident({ label: `Turno ${state.servicio.turn + 1}` }, (data) => {
+      const result = Engine.applyService(state, data.sceneGrade, data.reportGrade, data.incident, data.support, data.outcome);
+      Engine.save(state);
+      Render.renderHeader(state);
+      const consequences = [noteFrom(`Reputación ${result.repDelta >= 0 ? '+' : ''}${result.repDelta}.`, result.repDelta < 0)];
+      result.notes.forEach((text) => consequences.push(noteFrom(text, true)));
+      if (result.suspended) consequences.push(noteFrom('Acumulas 3 sanciones: suspensión de empleo de 2 turnos.', true));
+      if (result.turnEnded) consequences.push(noteFrom(`Fin de turno. Media del turno: ${result.turnAvg}.`));
+      if (result.promoted) consequences.push(noteFrom(`¡Ascenso! Ahora eres ${C.ranks[state.rank]}.`));
+      if (result.expelled) consequences.push(noteFrom('Asuntos Internos cierra tu caso: quedas fuera del cuerpo.', true));
+      const sections = incidentSections(data, null, null);
+      sections.push({ title: 'Consecuencias', score: result.avg, notes: consequences });
+      Render.renderResult({
+        title: result.expelled ? 'Expulsado del cuerpo' : result.avg >= Engine.PASS ? 'Servicio resuelto' : 'Servicio deficiente',
+        kind: result.expelled || result.avg < Engine.PASS ? 'bad' : 'good',
+        sections,
+        button: 'Continuar'
+      }, hub);
+    });
+  }
+
+  showStart();
 })();

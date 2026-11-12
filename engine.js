@@ -1,577 +1,285 @@
-// engine.js — estado y lógica del juego, sin tocar el DOM. Así se puede probar con Node.
+// engine.js — reglas de la carrera (academia → prácticas → servicio). Sin DOM: se puede probar con Node.
 (function (root, deps) {
   'use strict';
 
-  const { clamp, timeString, randomItem, randomBetween, numberOr } = deps.Utils;
+  const { clamp, pick, shuffle, round1 } = deps.Utils;
   const C = deps.Constants;
 
-  function cloneData(value) {
-    return JSON.parse(JSON.stringify(value));
-  }
+  const PASS = 5;
+  const MAX_ATTEMPTS = 2;
+  const PRACTICAS_TOTAL = 3;
+  const CALLS_PER_TURN = 3;
 
-  function freshDistrictHistory() {
-    return Object.fromEntries(C.districtNames.map((name) => [name, 0]));
-  }
-
-  function createState(scenarioKey) {
-    const key = C.scenarios[scenarioKey] ? scenarioKey : 'libre';
-    const scenario = C.scenarios[key];
-    const startClock = 8 * 60 + 42;
+  function newGame(name) {
     return {
-      scenarioKey: key,
-      shiftMinutes: scenario.shiftMinutes,
-      targetServed: scenario.targetServed,
-      spawnMultiplier: scenario.spawnMultiplier,
-      severityBoost: scenario.severityBoost,
-      failOnZeroTrust: scenario.failOnZeroTrust,
-      startClock,
-      gameOver: null,
-      calls: cloneData(C.baseCalls),
-      units: cloneData(C.baseUnits),
-      selectedCall: null,
-      selectedUnit: null,
-      clockMinutes: startClock,
-      served: 0,
-      trust: 78,
-      responseTotal: 0,
-      gameTicks: 0,
-      score: 0,
-      difficulty: 'media',
-      districtHistory: freshDistrictHistory(),
-      filterState: { district: 'all', priority: 'all' },
-      zoom: 1,
-      speed: 3,
-      paused: false,
-      soundOn: true,
-      report: [],
-      logEntries: [{ time: timeString(startClock), text: `Turno iniciado. ${C.baseUnits.length} grupos disponibles.` }],
-      spawnTimer: randomBetween(C.difficultyConfig.media.spawnMin, C.difficultyConfig.media.spawnMax) / scenario.spawnMultiplier,
-      trustCheckAcc: 0
+      v: 1,
+      name: (name || '').trim() || 'Agente',
+      stage: 'academia',
+      rank: 0,
+      rep: 50,
+      strikes: 0,
+      suspended: 0,
+      concealments: 0,
+      academy: {
+        grades: { teorico: null, fisico: null, practico: null },
+        attempts: { teorico: 0, fisico: 0, practico: 0 }
+      },
+      practicas: { grades: [], round: 1 },
+      servicio: { turn: 0, callsDone: 0, served: 0, turnScores: [] },
+      end: null,
+      history: [{ kind: 'info', title: 'Ingresas en la Academia', note: 'Comienza tu formación como aspirante.' }]
     };
   }
 
-  function getPriorityValue(level) {
-    return C.severityRank[level] || 0;
+  function log(state, kind, title, note) {
+    state.history.unshift({ kind, title, note });
+    state.history = state.history.slice(0, 30);
   }
 
-  function sortQueue(state) {
-    state.calls.sort((a, b) => {
-      const order = { pending: 0, assigned: 1, awaiting_decision: 2, done: 3 };
-      const aState = order[a.status] ?? 3;
-      const bState = order[b.status] ?? 3;
-      if (aState !== bState) return aState - bState;
-      return getPriorityValue(b.level) - getPriorityValue(a.level);
+  // --- examen teórico ---
+  function examQuestions(count = 8) {
+    return shuffle(C.questions).slice(0, count).map((item) => {
+      const options = shuffle(item.options.map((text, index) => ({ text, correct: index === item.answer })));
+      return { q: item.q, why: item.why, options: options.map((o) => o.text), answer: options.findIndex((o) => o.correct) };
     });
   }
 
-  function getVisibleCalls(state) {
-    return state.calls.filter((call) => {
-      const districtMatch = state.filterState.district === 'all' || call.location === state.filterState.district;
-      const priorityMatch = state.filterState.priority === 'all' || call.level === state.filterState.priority;
-      return districtMatch && priorityMatch;
-    });
+  function gradeExam(questions, answers) {
+    const correct = questions.filter((question, index) => answers[index] === question.answer).length;
+    return { correct, total: questions.length, score: round1((correct / questions.length) * 10) };
   }
 
-  function pendingCount(state) {
-    return state.calls.filter((call) => call.status === 'pending').length;
+  // --- prueba física: distancia recorrida (0-100 m) en el tiempo límite ---
+  function gradeRun(distance) {
+    return round1(clamp((distance / 90) * 10, 0, 10));
   }
 
-  function addLog(state, text) {
-    state.logEntries.unshift({ time: timeString(state.clockMinutes), text });
-    state.logEntries = state.logEntries.slice(0, 6);
+  // --- avisos ---
+  function pickIncident(state, forceMaxSev) {
+    let maxSev = 3;
+    if (state.stage === 'servicio') maxSev = state.rank >= 3 ? 5 : state.rank === 2 ? 4 : 3;
+    if (forceMaxSev) maxSev = forceMaxSev;
+    return pick(C.incidents.filter((incident) => incident.sev <= maxSev));
   }
 
-  // Posición a lo largo de la ruta en L (horizontal y luego vertical) según el progreso 0..1.
-  function routePositionAt(startX, startY, targetX, targetY, progress) {
-    const horizontalDistance = Math.abs(targetX - startX);
-    const verticalDistance = Math.abs(targetY - startY);
-    const distance = horizontalDistance + verticalDistance;
-    if (distance === 0) return { x: targetX, y: targetY };
-    const traveled = distance * clamp(progress, 0, 1);
-    if (traveled <= horizontalDistance) {
-      const direction = Math.sign(targetX - startX);
-      return { x: startX + direction * traveled, y: startY };
+  // Valora si la respuesta (refuerzos pedidos) se ajusta a la gravedad real.
+  function responseScore(incident, support) {
+    let score = 0;
+    const notes = [];
+    const has = (id) => support.includes(id);
+    if (incident.sev >= 3) {
+      if (has('apoyo') || has('uip')) score += 0.5; else { score -= 1; notes.push('Faltó pedir apoyo para un aviso de esta gravedad.'); }
     }
-    const direction = Math.sign(targetY - startY);
-    return { x: targetX, y: startY + direction * Math.min(verticalDistance, traveled - horizontalDistance) };
-  }
-
-  function updateScore(state) {
-    const config = C.difficultyConfig[state.difficulty];
-    const avgResponse = state.served ? state.responseTotal / state.served : 0;
-    const pendingPenalty = pendingCount(state) * 14;
-    const raw = state.served * 180 + state.trust * 2 - avgResponse * 2 - pendingPenalty;
-    state.score = Math.max(0, Math.round(raw * config.scoreMultiplier));
-  }
-
-  function newCallId(state) {
-    let id = `AV-${String(220 + Math.floor(Math.random() * 60)).padStart(3, '0')}`;
-    while (state.calls.some((call) => call.id === id)) {
-      id = `AV-${String(220 + Math.floor(Math.random() * 60)).padStart(3, '0')}`;
+    if (incident.sev >= 4) {
+      if (has('uip')) score += 0.5; else { score -= 1; notes.push('Con esta gravedad hacía falta un grupo UIP.'); }
     }
-    return id;
-  }
-
-  const severityLabel = { low: 'prioridad baja', medium: 'media', high: 'alta' };
-
-  function generateRandomCall(state, { silent = false } = {}) {
-    if (state.gameOver) return { ok: false, reason: 'game_over' };
-    if (pendingCount(state) >= 7) {
-      return { ok: false, reason: 'queue_full' };
+    if (incident.injured) {
+      if (has('sanitario')) score += 0.5; else { score -= 1.5; notes.push('Había heridos y no pediste ambulancia.'); }
     }
-    const template = randomItem(C.callTemplates);
-    const id = newCallId(state);
-    const difficultyFactor = C.difficultyConfig[state.difficulty].callFactor;
-    const boost = numberOr(state.severityBoost, 1);
-    const severityBias = Math.random() < 0.4 * difficultyFactor * boost ? 'high' : template.level;
-    const call = {
-      id,
-      title: template.title,
-      location: template.location,
-      place: template.place || template.location,
-      severity: template.severity,
-      level: severityBias,
-      x: template.x,
-      y: template.y,
-      kind: template.kind,
-      crowd: Boolean(template.crowd),
-      status: 'pending',
-      minutes: 0
-    };
-    state.calls.push(call);
-    sortQueue(state);
-    if (!silent) addLog(state, `Nuevo aviso ${id} recibido en ${call.location}.`);
-    return { ok: true, call };
+    if (has('uip') && incident.sev <= 2) { score -= 1.5; notes.push('Enviar antidisturbios a un aviso menor es desproporcionado.'); }
+    if (has('apoyo') && incident.sev <= 1) { score -= 0.5; notes.push('Para este aviso bastaba tu patrulla.'); }
+    if (has('sanitario') && !incident.injured) { score -= 0.2; }
+    return { score, notes };
   }
 
-  // Despacha uno o varios grupos libres a un mismo aviso. Cada grupo recorre
-  // su propia ruta desde su posición actual (pueden venir de bases distintas
-  // y llegar en momentos distintos); el aviso pasa a "awaiting_decision" solo
-  // cuando TODOS los grupos asignados han llegado.
-  function dispatchUnits(state, callId, unitIds) {
-    if (state.gameOver) return { ok: false };
-    const call = state.calls.find((item) => item.id === callId);
-    if (!call || call.status !== 'pending' || !Array.isArray(unitIds) || !unitIds.length) {
-      return { ok: false };
-    }
-    const units = unitIds
-      .map((id) => state.units.find((item) => item.id === id))
-      .filter((unit) => unit && unit.status === 'free');
-    if (!units.length) return { ok: false };
-    call.status = 'assigned';
-    call.minutes = 0;
-    call.assignedTo = units.map((unit) => unit.id);
-    units.forEach((unit) => {
-      unit.status = 'busy';
-      unit.callId = call.id;
-      unit.patrolTarget = null;
-      unit.routeStartX = unit.x;
-      unit.routeStartY = unit.y;
-      const routeDistance = Math.abs(call.x - unit.x) + Math.abs(call.y - unit.y) * 0.6;
-      const speed = (C.unitTypes[unit.type] || { speed: 1 }).speed;
-      unit.travelMinutes = Math.max(3, Math.min(30, Math.ceil(routeDistance / 18) * 5 / speed));
-      unit.travelElapsed = 0;
-    });
-    addLog(state, `${units.map((unit) => unit.id).join(', ')} en camino a ${call.id}.`);
-    return { ok: true, call, units };
+  function buildTruth(incident, support, outcome) {
+    const escalated = outcome.result === 'escalated';
+    const usedForce = outcome.disperseUsed || outcome.pushUsed;
+    const injuries = incident.injured || (escalated && incident.crowd >= 8);
+    let result = 'Resuelto sin incidencias';
+    if (escalated) result = 'No resuelto / escalada';
+    else if (outcome.result === 'partial' || usedForce || injuries) result = 'Resuelto con incidencias';
+    return { type: incident.report, result, usedForce, injuries, escalated };
   }
 
-  // Alias de un solo grupo, por comodidad/compatibilidad.
-  function dispatchUnit(state, callId, unitId) {
-    return dispatchUnits(state, callId, [unitId]);
+  function gradeScene(incident, support, outcome) {
+    const resp = responseScore(incident, support);
+    const base = { calm: 8, partial: 6, escalated: 2 }[outcome.result] ?? 5;
+    const notes = [];
+    let score = base;
+    if (outcome.result === 'calm') notes.push('Conseguiste calmar la situación.');
+    else if (outcome.result === 'partial') notes.push('Cerraste el servicio con la tensión aún alta.');
+    else notes.push('La situación se descontroló.');
+    if (outcome.result === 'calm' && outcome.time < outcome.limit * 0.6) { score += 1; notes.push('Resolviste con rapidez.'); }
+    score += resp.score;
+    notes.push(...resp.notes);
+    if (outcome.trustPenalty > 0) { score -= outcome.trustPenalty; notes.push('Dispersaste a la multitud: uso de fuerza que cuesta confianza.'); }
+    if (outcome.pushUsed) { score -= 1; notes.push('Avanzaste sobre una multitud ya tensa y la provocaste.'); }
+    if (outcome.disperseUsed && incident.sev <= 2) { score -= 2; notes.push('Dispersar a una multitud en un aviso menor es desproporcionado.'); }
+    const truth = buildTruth(incident, support, outcome);
+    return { score: round1(clamp(score, 0, 10)), notes, truth, response: resp.score };
   }
 
-  // Al llegar la unidad se muestra una escena con texto y opciones (ver
-  // C.sceneScripts). Esta función resuelve la opción elegida, con la
-  // posibilidad de una complicación (failChance) que cambia el desenlace.
-  function getSceneScript(callKind) {
-    return C.sceneScripts[callKind] || C.sceneScripts.default;
+  // El informe se compara con lo que pasó de verdad.
+  function gradeReport(truth, report) {
+    let points = 0;
+    const notes = [];
+    let concealed = false;
+    if (report.type === truth.type) points += 2; else notes.push(`Tipo de hecho incorrecto (era: ${truth.type}).`);
+    if (report.result === truth.result) points += 2; else notes.push(`El resultado no coincide con lo ocurrido (era: ${truth.result}).`);
+    if ((report.force === 'Sí') === truth.usedForce) points += 2;
+    else if (truth.usedForce) { notes.push('Ocultaste el uso de la fuerza. Es una falta grave.'); concealed = true; }
+    else notes.push('Declaraste un uso de fuerza que no hubo.');
+    if ((report.injuries === 'Sí') === truth.injuries) points += 2;
+    else if (truth.injuries) { notes.push('No declaraste que hubo heridos.'); concealed = true; }
+    else notes.push('Declaraste heridos que no los hubo.');
+    const length = (report.text || '').trim().length;
+    if (length >= 70) points += 2;
+    else if (length >= 30) { points += 1; notes.push('La narración es demasiado breve.'); }
+    else notes.push('Falta la narración de los hechos.');
+    return { score: points, notes, concealed };
   }
 
-  function moodOf(tension) {
-    return tension < 35 ? 'calm' : tension < 70 ? 'tense' : 'violent';
+  // --- academia ---
+  function passedAll(state) {
+    return Object.values(state.academy.grades).every((grade) => grade !== null && grade >= PASS);
   }
 
-  function assignedUnits(state, call) {
-    const ids = Array.isArray(call.assignedTo) ? call.assignedTo : [call.assignedTo];
-    return ids.map((id) => state.units.find((item) => item.id === id)).filter(Boolean);
-  }
-
-  function sceneStats(state, call) {
-    const stats = { force: 0, dialogue: 0, command: 0 };
-    assignedUnits(state, call).forEach((unit) => {
-      const t = C.unitTypes[unit.type] || { force: 1, dialogue: 1, command: 0 };
-      stats.force += t.force;
-      stats.dialogue += t.dialogue;
-      stats.command += t.command;
-    });
-    stats.command = Math.min(1, stats.command);
-    return stats;
-  }
-
-  function initScene(call) {
-    const base = { low: 18, medium: 32, high: 50 }[call.level] || 30;
-    call.scene = {
-      tension: clamp(base + (call.crowd ? 12 : 0) + Math.min(call.waiting || 0, 30) * 0.4, 0, 90),
-      round: 0,
-      lastOrder: null,
-      trustPenalty: 0,
-      extraMinutes: 0,
-      pendingDrift: 0,
-      orders: []
-    };
-  }
-
-  // Cuando una intervención sale mal, el problema salta a otro punto.
-  function spawnChain(state, call) {
-    const kind = C.chainKinds[call.kind];
-    if (!kind || state.calls.filter((item) => item.status !== 'done').length >= 10) return null;
-    const options = C.callTemplates.filter((t) => t.kind === kind && (t.place || t.location) !== (call.place || call.location));
-    if (!options.length) return null;
-    options.sort((a, b) => Math.hypot(a.x - call.x, a.y - call.y) - Math.hypot(b.x - call.x, b.y - call.y));
-    const template = options[0];
-    const chain = {
-      id: newCallId(state),
-      title: `Escalada · ${template.title}`,
-      location: template.location,
-      place: template.place || template.location,
-      severity: severityLabel.high,
-      level: 'high',
-      x: template.x,
-      y: template.y,
-      kind: template.kind,
-      crowd: Boolean(template.crowd),
-      status: 'pending',
-      minutes: 0,
-      waiting: 0
-    };
-    state.calls.push(chain);
-    sortQueue(state);
-    addLog(state, `${call.id} se ha descontrolado: nuevo aviso ${chain.id} en ${chain.place}.`);
-    return chain;
-  }
-
-  // Cierre común: libera grupos, puntúa, anota el informe y encadena avisos.
-  function finishScene(state, call, option, forcedFail) {
-    const script = getSceneScript(call.kind);
-    const scene = call.scene || { tension: 40, orders: [], trustPenalty: 0, extraMinutes: 0 };
-    const units = assignedUnits(state, call);
-    let failed;
-    let trustDelta;
-    let extraMinutes;
-    let text;
-    if (forcedFail || !option) {
-      failed = true;
-      trustDelta = -6;
-      extraMinutes = 10;
-      text = 'La multitud se ha descontrolado antes de que pudieras cerrar la intervención.';
-    } else {
-      const chance = clamp((option.failChance || 0) + (scene.tension - 40) / 160, 0.02, 0.92);
-      failed = Math.random() < chance;
-      trustDelta = failed ? option.failTrust : option.trust + (scene.tension < 30 ? 1 : 0);
-      extraMinutes = failed ? option.failExtraMinutes : option.extraMinutes;
-      text = failed ? option.failText : option.successText;
-    }
-    trustDelta -= scene.trustPenalty || 0;
-    extraMinutes += scene.extraMinutes || 0;
-    call.status = 'done';
-    call.minutes += extraMinutes;
-    state.served += 1;
-    state.responseTotal += call.minutes;
-    state.trust = clamp(state.trust + trustDelta + C.difficultyConfig[state.difficulty].trustBonus, 0, 99);
-    state.districtHistory[call.location] = (state.districtHistory[call.location] || 0) + 1;
-    units.forEach((unit) => {
-      unit.status = 'free';
-      unit.callId = null;
-      unit.location = call.place || call.location;
-      unit.progress = Math.min(100, unit.progress + 4);
-      unit.routeStartX = null;
-      unit.routeStartY = null;
-      unit.travelMinutes = null;
-      unit.travelElapsed = null;
-    });
-    addLog(state, `${units.map((unit) => unit.id).join(', ')} · ${call.id}: ${text}`);
-    let chain = null;
-    if (failed && (forcedFail || Math.random() < 0.7)) chain = spawnChain(state, call);
-    if (!Array.isArray(state.report)) state.report = [];
-    state.report.push({
-      id: call.id,
-      title: call.title,
-      place: call.place || call.location,
-      units: units.map((unit) => unit.id),
-      orders: (scene.orders || []).map((o) => o.label),
-      closing: option ? option.label : 'Escalada',
-      tension: Math.round(scene.tension),
-      failed,
-      trustDelta,
-      minutes: Math.round(call.minutes),
-      chain: chain ? chain.id : null
-    });
-    state.report = state.report.slice(-40);
-    if (state.selectedCall === call.id) state.selectedCall = null;
-    return { ok: true, title: script.title, text, trustDelta, failed, chain, escalated: Boolean(forcedFail) };
-  }
-
-  function resolveScene(state, callId, optionId) {
-    if (state.gameOver) return { ok: false };
-    const call = state.calls.find((item) => item.id === callId);
-    if (!call || call.status !== 'awaiting_decision') return { ok: false };
-    const option = getSceneScript(call.kind).options.find((item) => item.id === optionId);
-    if (!option) return { ok: false };
-    if (!call.scene) initScene(call);
-    return finishScene(state, call, option, false);
-  }
-
-  // Una orden durante la escena: mueve la tensión según los grupos presentes.
-  function applyOrder(state, callId, orderId) {
-    if (state.gameOver) return { ok: false };
-    const call = state.calls.find((item) => item.id === callId);
-    if (!call || call.status !== 'awaiting_decision') return { ok: false };
-    const order = C.sceneOrders.find((item) => item.id === orderId);
-    if (!order) return { ok: false };
-    if (!call.scene) initScene(call);
-    const scene = call.scene;
-    const { force, dialogue, command } = sceneStats(state, call);
-    const t = scene.tension;
-    let delta = 0;
-    if (orderId === 'linea') delta = -(2 + 2 * force);
-    else if (orderId === 'dialogar') delta = t < 70 ? -(2 + 5 * dialogue) : -(1 + 1.5 * dialogue);
-    else if (orderId === 'avanzar') delta = t < 35 ? -2 : 5 + t / 12 - force;
-    else if (orderId === 'retroceder') { delta = -9; scene.extraMinutes += 2; scene.pendingDrift += 3; }
-    else if (orderId === 'dispersar') {
-      delta = t >= 65 ? 12 + (4 - Math.min(force, 4)) * 2 : -(18 + 3 * force);
-      scene.trustPenalty += 2;
-    }
-    const levelFactor = call.level === 'high' ? 1.3 : call.level === 'low' ? 0.7 : 1;
-    const drift = (randomBetween(-2, 5) * levelFactor * (call.crowd ? 1.2 : 1)) - command * 2.5 + scene.pendingDrift;
-    scene.pendingDrift = 0;
-    scene.tension = clamp(t + delta + drift, 0, 100);
-    scene.round += 1;
-    scene.lastOrder = orderId;
-    scene.orders.push({ id: orderId, label: order.label, tension: Math.round(scene.tension) });
-    addLog(state, `${call.id}: ${order.label.toLowerCase()} · tensión ${Math.round(scene.tension)}%.`);
-    if (scene.tension >= 100) {
-      return { ...finishScene(state, call, null, true), finished: true };
-    }
-    return { ok: true, finished: false, tension: scene.tension, mood: moodOf(scene.tension) };
-  }
-
-  function startPatrol(state, unitId, x, y) {
-    if (state.gameOver) return { ok: false };
-    const unit = state.units.find((item) => item.id === unitId);
-    if (!unit || unit.status !== 'free') return { ok: false };
-    unit.patrolTarget = { x: clamp(x, 2, 98), y: clamp(y, 2, 98) };
-    return { ok: true, unit };
-  }
-
-  // Avanza el estado `deltaMinutes` minutos de juego (puede ser fraccionario).
-  // Devuelve una lista de eventos para que quien dibuje decida si necesita un
-  // refresco completo o solo mover los pines.
-  function tick(state, deltaMinutes) {
-    const events = [];
-    if (state.gameOver || deltaMinutes <= 0) return events;
-    state.clockMinutes += deltaMinutes;
-    state.gameTicks += deltaMinutes;
-
-    state.calls.filter((call) => call.status === 'assigned').forEach((call) => {
-      const assignedIds = Array.isArray(call.assignedTo) ? call.assignedTo : [call.assignedTo];
-      const units = assignedIds.map((id) => state.units.find((item) => item.id === id)).filter(Boolean);
-      let allArrived = units.length > 0;
-      let maxElapsed = call.minutes || 0;
-      units.forEach((unit) => {
-        const travelMinutes = Math.max(3, Number(unit.travelMinutes) || 10);
-        unit.travelElapsed = Math.min(travelMinutes, (unit.travelElapsed || 0) + deltaMinutes);
-        const progress = unit.travelElapsed / travelMinutes;
-        const position = routePositionAt(unit.routeStartX, unit.routeStartY, call.x, call.y, progress);
-        unit.x = position.x;
-        unit.y = position.y;
-        if (unit.travelElapsed < travelMinutes) allArrived = false;
-        maxElapsed = Math.max(maxElapsed, unit.travelElapsed);
-      });
-      call.minutes = maxElapsed;
-      if (allArrived) {
-        call.status = 'awaiting_decision';
-        initScene(call);
-        addLog(state, `${call.id}: ${units.map((unit) => unit.id).join(', ')} en el lugar. Se necesita una decisión.`);
-        events.push({ type: 'arrived', callId: call.id });
+  function applyAcademy(state, module, score) {
+    const academy = state.academy;
+    academy.attempts[module] += 1;
+    const names = { teorico: 'examen teórico', fisico: 'prueba física', practico: 'prueba práctica' };
+    if (score >= PASS) {
+      academy.grades[module] = score;
+      log(state, 'good', `Apto: ${names[module]}`, `Nota ${score}.`);
+      if (passedAll(state)) {
+        const values = Object.values(academy.grades);
+        const final = round1(values.reduce((a, b) => a + b, 0) / values.length);
+        state.stage = 'practicas';
+        state.rank = 1;
+        log(state, 'good', 'Te gradúas en la Academia', `Nota media ${final}. Pasas a prácticas con tutor.`);
+        return { passed: true, graduated: true, final };
       }
-    });
+      return { passed: true };
+    }
+    log(state, 'bad', `No apto: ${names[module]}`, `Nota ${score}.`);
+    if (academy.attempts[module] >= MAX_ATTEMPTS) {
+      state.end = { kind: 'baja', reason: `Has suspendido la ${names[module]} en las dos convocatorias. Causas baja en la Academia.` };
+      state.stage = 'baja';
+      return { passed: false, expelled: true };
+    }
+    return { passed: false, retry: true };
+  }
 
-    // Avisos desatendidos: se agravan con el tiempo.
-    state.calls.filter((call) => call.status === 'pending').forEach((call) => {
-      call.waiting = (call.waiting || 0) + deltaMinutes;
-      if (call.waiting > 35 && call.level !== 'high') {
-        call.level = call.level === 'low' ? 'medium' : 'high';
-        call.severity = severityLabel[call.level];
-        call.waiting = 0;
-        addLog(state, `${call.id} se agrava por la espera (${call.place || call.location}).`);
-        events.push({ type: 'worsen', callId: call.id });
-      }
-    });
+  // --- prácticas ---
+  function applyPractica(state, score) {
+    state.practicas.grades.push(score);
+    log(state, score >= PASS ? 'good' : 'bad', 'Servicio de prácticas', `El tutor te pone un ${score}.`);
+    if (state.practicas.grades.length < PRACTICAS_TOTAL) return { done: false };
+    const avg = round1(state.practicas.grades.reduce((a, b) => a + b, 0) / PRACTICAS_TOTAL);
+    if (avg >= PASS) {
+      state.stage = 'servicio';
+      state.rank = 2;
+      log(state, 'good', 'Terminas las prácticas', `Media ${avg}. Eres Policía con plaza.`);
+      return { done: true, passed: true, avg };
+    }
+    if (state.practicas.round === 1) {
+      state.practicas.round = 2;
+      state.practicas.grades = [];
+      log(state, 'bad', 'Prácticas no superadas', `Media ${avg}. Repites el periodo.`);
+      return { done: true, passed: false, retry: true, avg };
+    }
+    state.end = { kind: 'baja', reason: 'No superas el periodo de prácticas en la segunda oportunidad. Se te da de baja.' };
+    state.stage = 'baja';
+    return { done: true, passed: false, expelled: true, avg };
+  }
 
-    // Patrullas libres: unidades sin aviso que el jugador movió manualmente por el mapa.
-    state.units.filter((unit) => unit.status === 'free' && unit.patrolTarget).forEach((unit) => {
-      const speed = 1.4; // % del mapa por minuto de juego
-      const dx = unit.patrolTarget.x - unit.x;
-      const dy = unit.patrolTarget.y - unit.y;
-      const distance = Math.hypot(dx, dy);
-      const step = speed * deltaMinutes;
-      if (distance <= step || distance === 0) {
-        unit.x = unit.patrolTarget.x;
-        unit.y = unit.patrolTarget.y;
-        unit.patrolTarget = null;
-      } else {
-        unit.x += (dx / distance) * step;
-        unit.y += (dy / distance) * step;
-      }
-    });
+  // --- servicio ---
+  function applyService(state, sceneGrade, reportGrade, incident, support, outcome) {
+    const avg = (sceneGrade.score + reportGrade.score) / 2;
+    const notes = [];
+    let repDelta = Math.round((avg - 5) * 2);
+    if (sceneGrade.truth.escalated) repDelta -= 3;
+    state.rep = clamp(state.rep + repDelta, 0, 100);
+    let strike = false;
+    if (reportGrade.concealed) {
+      strike = true;
+      state.concealments += 1;
+      notes.push('Expediente: informe con datos ocultados.');
+    }
+    if (sceneGrade.truth.escalated && sceneGrade.truth.injuries) { strike = true; notes.push('Expediente: escalada con heridos.'); }
+    if (support.includes('uip') && incident.sev <= 2 && sceneGrade.truth.escalated) { strike = true; notes.push('Expediente: respuesta desproporcionada.'); }
+    if (outcome.trustPenalty >= 2) { strike = true; notes.push('Expediente: uso reiterado de dispersión.'); }
+    if (strike) state.strikes += 1;
+    state.servicio.served += 1;
+    state.servicio.callsDone += 1;
+    state.servicio.turnScores.push(round1(avg));
+    log(state, avg >= PASS ? 'good' : 'bad', incident.title, `Servicio ${round1(avg)} · reputación ${repDelta >= 0 ? '+' : ''}${repDelta}.`);
 
-    state.spawnTimer -= deltaMinutes;
-    if (state.spawnTimer <= 0) {
-      const config = C.difficultyConfig[state.difficulty];
-      const multiplier = numberOr(state.spawnMultiplier, 1);
-      state.spawnTimer = randomBetween(config.spawnMin, config.spawnMax) / multiplier;
-      const result = generateRandomCall(state);
-      if (result.ok) events.push({ type: 'spawn', callId: result.call.id });
+    const result = { repDelta, strike, notes, avg: round1(avg), turnEnded: false };
+
+    if (state.concealments >= 2 || state.strikes >= 5) {
+      state.end = {
+        kind: 'expulsion',
+        reason: state.concealments >= 2
+          ? 'Dos informes con datos ocultados. Asuntos Internos te expulsa del cuerpo.'
+          : 'Acumulas demasiadas sanciones. Se abre expediente de separación del servicio.'
+      };
+      state.stage = 'baja';
+      result.expelled = true;
+      return result;
+    }
+    if (state.strikes >= 3 && state.suspended === 0) {
+      state.suspended = 2;
+      log(state, 'bad', 'Suspensión de empleo', 'Acumulas 3 sanciones: quedas suspendido 2 turnos.');
+      result.suspended = true;
     }
 
-    state.trustCheckAcc += deltaMinutes;
-    if (state.trustCheckAcc >= 10) {
-      state.trustCheckAcc = 0;
-      if (pendingCount(state) > 4 && state.trust > 0 && Math.random() < 0.3) {
-        state.trust = Math.max(0, state.trust - 1);
-        events.push({ type: 'trust_drop' });
+    if (state.servicio.callsDone >= CALLS_PER_TURN) {
+      state.servicio.callsDone = 0;
+      state.servicio.turn += 1;
+      const scores = state.servicio.turnScores.slice(-CALLS_PER_TURN);
+      result.turnEnded = true;
+      result.turnAvg = round1(scores.reduce((a, b) => a + b, 0) / scores.length);
+      if (state.rank < 3 && state.rep >= 75 && state.servicio.served >= 8 && state.strikes <= 1) {
+        state.rank += 1;
+        result.promoted = true;
+        log(state, 'good', 'Ascenso', `Ascendes a ${C.ranks[state.rank]}.`);
       }
     }
+    return result;
+  }
 
-    if (state.failOnZeroTrust && state.trust <= 0) {
-      state.gameOver = { won: false, reason: 'confianza' };
-      state.paused = true;
-      addLog(state, 'La confianza vecinal se ha derrumbado. Turno fallido.');
-      events.push({ type: 'gameover', won: false });
-    } else if (state.shiftMinutes != null && state.clockMinutes - state.startClock >= state.shiftMinutes) {
-      const won = state.served >= state.targetServed;
-      state.gameOver = { won, reason: 'tiempo' };
-      state.paused = true;
-      addLog(state, won ? 'Fin del turno: objetivo cumplido.' : 'Fin del turno: objetivo no alcanzado.');
-      events.push({ type: 'gameover', won });
+  function serveSuspension(state) {
+    if (state.suspended <= 0) return false;
+    state.suspended -= 1;
+    state.rep = clamp(state.rep - 3, 0, 100);
+    if (state.suspended === 0) {
+      state.strikes = 1;
+      log(state, 'info', 'Fin de la suspensión', 'Vuelves al servicio con una sanción vigente.');
     }
-
-    updateScore(state);
-    return events;
+    return true;
   }
 
-  function setDifficulty(state, nextDifficulty) {
-    if (!C.difficultyConfig[nextDifficulty]) return;
-    state.difficulty = nextDifficulty;
-    updateScore(state);
+  // --- guardado ---
+  function save(state) {
+    try { window.localStorage.setItem(C.SAVE_KEY, JSON.stringify(state)); return true; } catch (error) { return false; }
   }
 
-  function resetTurn(state, scenarioKey) {
-    const fresh = createState(scenarioKey || state.scenarioKey);
-    Object.assign(state, fresh);
-  }
-
-  function saveState(state) {
+  function load() {
     try {
-      window.localStorage.setItem(C.STORAGE_KEY, JSON.stringify(state));
-      return true;
-    } catch (error) {
-      console.warn('No se pudo guardar la sesión', error);
-      return false;
-    }
-  }
-
-  function restoreState() {
-    try {
-      const raw = window.localStorage.getItem(C.STORAGE_KEY);
+      const raw = window.localStorage.getItem(C.SAVE_KEY);
       if (!raw) return null;
       const parsed = JSON.parse(raw);
-      if (!parsed || !Array.isArray(parsed.calls) || !Array.isArray(parsed.units)) return null;
-      const state = createState(parsed.scenarioKey);
-      state.gameOver = parsed.gameOver && typeof parsed.gameOver === 'object' ? parsed.gameOver : null;
-      state.startClock = numberOr(parsed.startClock, state.startClock);
-      state.report = Array.isArray(parsed.report) ? parsed.report : [];
-      state.calls = parsed.calls;
-      state.units = parsed.units;
-      // Asegura que no falte la manifestación si se perdió por algún motivo.
-      if (!state.calls.some((call) => call.crowd)) {
-        const demonstration = C.baseCalls.find((call) => call.crowd);
-        if (demonstration && pendingCount(state) < 7 && !state.calls.some((call) => call.id === demonstration.id)) {
-          state.calls.push(cloneData(demonstration));
-        }
-      }
-      state.calls.filter((call) => call.status === 'assigned').forEach((call) => {
-        const ids = Array.isArray(call.assignedTo) ? call.assignedTo : [call.assignedTo];
-        call.assignedTo = ids;
-        ids.forEach((id) => {
-          const unit = state.units.find((item) => item.id === id);
-          if (!unit) return;
-          unit.routeStartX = numberOr(unit.routeStartX, unit.x);
-          unit.routeStartY = numberOr(unit.routeStartY, unit.y);
-          unit.travelMinutes = Math.max(3, numberOr(unit.travelMinutes, 10));
-          unit.travelElapsed = numberOr(unit.travelElapsed, call.minutes || 0);
-        });
-      });
-      state.selectedCall = parsed.selectedCall || null;
-      state.selectedUnit = parsed.selectedUnit || null;
-      state.clockMinutes = numberOr(parsed.clockMinutes, state.clockMinutes);
-      state.served = numberOr(parsed.served, 0);
-      state.trust = numberOr(parsed.trust, 78);
-      state.responseTotal = numberOr(parsed.responseTotal, 0);
-      state.gameTicks = numberOr(parsed.gameTicks, 0);
-      state.zoom = numberOr(parsed.zoom, 1);
-      state.speed = numberOr(parsed.speed, 3);
-      state.paused = Boolean(parsed.paused);
-      state.soundOn = parsed.soundOn !== false;
-      state.score = numberOr(parsed.score, 0);
-      state.difficulty = parsed.difficulty && C.difficultyConfig[parsed.difficulty] ? parsed.difficulty : 'media';
-      state.districtHistory = parsed.districtHistory && typeof parsed.districtHistory === 'object'
-        ? { ...freshDistrictHistory(), ...parsed.districtHistory }
-        : freshDistrictHistory();
-      state.filterState = parsed.filterState && typeof parsed.filterState === 'object'
-        ? { district: 'all', priority: 'all', ...parsed.filterState }
-        : { district: 'all', priority: 'all' };
-      state.logEntries = Array.isArray(parsed.logEntries) && parsed.logEntries.length
-        ? parsed.logEntries.slice(0, 6)
-        : [{ time: timeString(state.clockMinutes), text: 'Turno recuperado.' }];
-      state.spawnTimer = numberOr(parsed.spawnTimer, randomBetween(6, 15));
-      state.trustCheckAcc = numberOr(parsed.trustCheckAcc, 0);
-      return state;
+      if (!parsed || parsed.v !== 1 || !parsed.academy) return null;
+      return parsed;
     } catch (error) {
-      console.warn('No se pudo restaurar la sesión', error);
       return null;
     }
   }
 
-  const api = {
-    createState,
-    sortQueue,
-    getVisibleCalls,
-    pendingCount,
-    addLog,
-    routePositionAt,
-    dispatchUnits,
-    applyOrder,
-    moodOf,
-    updateScore,
-    generateRandomCall,
-    dispatchUnit,
-    resolveScene,
-    getSceneScript,
-    startPatrol,
-    tick,
-    setDifficulty,
-    resetTurn,
-    saveState,
-    restoreState
-  };
-
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = api;
-  } else {
-    root.Engine = api;
+  function clearSave() {
+    try { window.localStorage.removeItem(C.SAVE_KEY); } catch (error) { /* sin almacenamiento */ }
   }
+
+  const api = {
+    PASS, MAX_ATTEMPTS, PRACTICAS_TOTAL, CALLS_PER_TURN,
+    newGame, examQuestions, gradeExam, gradeRun, pickIncident, responseScore, buildTruth,
+    gradeScene, gradeReport, applyAcademy, applyPractica, applyService, serveSuspension,
+    save, load, clearSave
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.Engine = api;
 })(
   typeof window !== 'undefined' ? window : globalThis,
   typeof window !== 'undefined'

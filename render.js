@@ -1,492 +1,347 @@
-// render.js — todo lo que toca el DOM y el mapa Leaflet. No decide reglas del juego, solo pinta `state`.
+// render.js — pinta cada pantalla del juego. No decide reglas: solo muestra y avisa de lo que hace el jugador.
 (function (root, deps) {
   'use strict';
 
-  const { timeString, escapeHtml, percentToLatLng } = deps.Utils;
-  const Engine = deps.Engine;
+  const { esc, round1 } = deps.Utils;
   const C = deps.Constants;
+  const Scene = deps.Scene;
+  const Engine = deps.Engine;
 
-  const dom = {};
-  let leafletMap = null;
-  const unitMarkers = new Map();
-  const incidentMarkers = new Map();
-  const crowdMarkers = new Map();
-  let routeLayers = [];
-  let lastSceneCall = null;
-  let lastSceneUnits = [];
+  let view = null;
+  let topbar = null;
+  let cleanup = null;
 
-  function cacheDom() {
-    dom.unitList = document.getElementById('units');
-    dom.clock = document.getElementById('clock');
-    dom.unitCount = document.getElementById('unit-count');
-    dom.mapTip = document.getElementById('map-tip');
-    dom.served = document.getElementById('served');
-    dom.trust = document.getElementById('trust');
-    dom.available = document.getElementById('available');
-    dom.response = document.getElementById('response');
-    dom.score = document.getElementById('score');
-    dom.difficultyLabel = document.getElementById('difficulty');
-    dom.difficultySelect = document.getElementById('difficulty-select');
-    dom.historyList = document.getElementById('history-list');
-    dom.log = document.getElementById('log');
-    dom.toast = document.getElementById('toast');
-    dom.pauseBtn = document.getElementById('pause-toggle');
-    dom.soundBtn = document.getElementById('sound-toggle');
-    dom.speedButtons = Array.from(document.querySelectorAll('[data-speed]'));
-    dom.patrolHint = document.getElementById('patrol-hint');
-    dom.objectiveBanner = document.getElementById('objective-banner');
-    dom.startOverlay = document.getElementById('start-overlay');
-    dom.menuSelect = document.getElementById('menu-select');
-    dom.menuBrief = document.getElementById('menu-brief');
-    dom.briefTitle = document.getElementById('brief-title');
-    dom.briefText = document.getElementById('brief-text');
-    dom.briefMeta = document.getElementById('brief-meta');
-    dom.endOverlay = document.getElementById('end-overlay');
-    dom.endTitle = document.getElementById('end-title');
-    dom.endStats = document.getElementById('end-stats');
-    dom.sceneOverlay = document.getElementById('scene-overlay');
-    dom.dispatchOverlay = document.getElementById('dispatch-overlay');
+  function init() {
+    view = document.getElementById('view');
+    topbar = document.getElementById('topbar');
   }
 
-  // --- mapa Leaflet, sobre calles reales (Madrid · Puerta del Sol) ---
-  function initMap() {
-    leafletMap = L.map('map-canvas', { zoomControl: false, attributionControl: true })
-      .setView([(C.mapBounds.north + C.mapBounds.south) / 2, (C.mapBounds.east + C.mapBounds.west) / 2], C.mapZoom);
-    // OpenStreetMap estándar (sin API key); se oscurece con un filtro CSS en .leaflet-tile-pane
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-      subdomains: 'abc',
-      maxZoom: 19
-    }).addTo(leafletMap);
-    C.mapPoints.forEach((point) => {
-      const ll = percentToLatLng(C.mapBounds, point.x, point.y);
-      L.marker([ll.lat, ll.lng], {
-        icon: L.divIcon({ className: '', html: `<div class="poi-marker ${point.type}">${escapeHtml(point.label)}</div>`, iconSize: [20, 20] }),
-        interactive: false
-      }).bindTooltip(point.name).addTo(leafletMap);
-    });
-    // peatones ambientales: vida de fondo por toda la ciudad, siempre en marcha
-    C.crowdPositions.forEach((pos, i) => {
-      const ll = percentToLatLng(C.mapBounds, pos[0], pos[1]);
-      L.marker([ll.lat, ll.lng], {
-        icon: L.divIcon({ className: '', html: `<div class="ambient-pedestrian" style="${wanderStyle(i, 4)}"></div>`, iconSize: [8, 8] }),
-        interactive: false
-      }).addTo(leafletMap);
-    });
-    return leafletMap;
+  function setView(html) {
+    if (cleanup) { cleanup(); cleanup = null; }
+    view.innerHTML = html;
+    window.scrollTo(0, 0);
   }
 
-  // genera un estilo inline con variables CSS para que cada punto "deambule" de forma
-  // distinta pero estable (sin Math.random, para no saltar entre renders)
-  function wanderStyle(seed, range) {
-    const driftX = (Math.sin(seed * 12.9898) * range).toFixed(1);
-    const driftY = (Math.cos(seed * 78.233) * range).toFixed(1);
-    const delay = ((seed * 0.53) % 3).toFixed(2);
-    const pace = (2.4 + (seed % 5) * 0.45).toFixed(2);
-    return `--drift-x:${driftX}px; --drift-y:${driftY}px; --delay:${delay}s; --pace:${pace}s;`;
-  }
+  const $ = (selector) => view.querySelector(selector);
+  const $$ = (selector) => Array.from(view.querySelectorAll(selector));
 
-  function crowdPersonDots(count) {
-    return C.crowdPositions.slice(0, count).map((pos, i) => (
-      `<div class="crowd-person" style="left:${pos[0]}%; top:${pos[1]}%; ${wanderStyle(i, 6)}"></div>`
-    )).join('');
-  }
-
-  function getMap() {
-    return leafletMap;
-  }
-
-  function zoomIn() { if (leafletMap) leafletMap.zoomIn(); }
-  function zoomOut() { if (leafletMap) leafletMap.zoomOut(); }
-
-  function clearDynamicLayers() {
-    unitMarkers.forEach((marker) => leafletMap.removeLayer(marker));
-    incidentMarkers.forEach((marker) => leafletMap.removeLayer(marker));
-    crowdMarkers.forEach((marker) => leafletMap.removeLayer(marker));
-    unitMarkers.clear();
-    incidentMarkers.clear();
-    crowdMarkers.clear();
-    routeLayers.forEach((layer) => leafletMap.removeLayer(layer));
-    routeLayers = [];
-  }
-
-  function renderRoute(state) {
-    routeLayers.forEach((layer) => leafletMap.removeLayer(layer));
-    routeLayers = [];
-    state.calls.filter((item) => item.status === 'assigned').forEach((call) => {
-      const ids = Array.isArray(call.assignedTo) ? call.assignedTo : [call.assignedTo];
-      ids.forEach((id) => {
-        const unit = state.units.find((item) => item.id === id);
-        if (!unit || unit.routeStartX == null) return;
-        const start = percentToLatLng(C.mapBounds, unit.routeStartX, unit.routeStartY);
-        const corner = percentToLatLng(C.mapBounds, call.x, unit.routeStartY);
-        const target = percentToLatLng(C.mapBounds, call.x, call.y);
-        const current = percentToLatLng(C.mapBounds, unit.x, unit.y);
-        routeLayers.push(L.polyline([[start.lat, start.lng], [corner.lat, corner.lng], [target.lat, target.lng]], {
-          color: '#f0bc65', weight: 3, opacity: 0.45, dashArray: '6 8', interactive: false
-        }).addTo(leafletMap));
-        const passedCorner = Math.abs(unit.y - unit.routeStartY) > 0.01;
-        const pts = passedCorner
-          ? [[start.lat, start.lng], [corner.lat, corner.lng], [current.lat, current.lng]]
-          : [[start.lat, start.lng], [current.lat, current.lng]];
-        routeLayers.push(L.polyline(pts, { color: '#f0bc65', weight: 3, interactive: false }).addTo(leafletMap));
-      });
-    });
-  }
-
-  function unitIcon(unit, selected) {
-    const classes = `unit-marker${unit.status === 'busy' ? ' busy' : ''}${selected ? ' selected' : ''}${unit.patrolTarget ? ' patrolling' : ''}`;
-    return L.divIcon({ className: '', html: `<div class="${classes}">${escapeHtml(unit.id)}</div>`, iconSize: [30, 25] });
-  }
-
-  function incidentIcon(call, selected) {
-    const classes = `incident-marker severity-${call.level}${selected ? ' selected' : ''}`;
-    return L.divIcon({ className: '', html: `<div class="${classes}"><span>${escapeHtml(call.kind)}</span></div>`, iconSize: [23, 23] });
-  }
-
-  function renderMap(state, handlers) {
-    clearDynamicLayers();
-    state.calls.filter((call) => call.status !== 'done').forEach((call) => {
-      const ll = percentToLatLng(C.mapBounds, call.x, call.y);
-      if (call.crowd) {
-        const crowdMarker = L.marker([ll.lat, ll.lng], {
-          icon: L.divIcon({ className: '', html: `<div class="crowd-marker">${crowdPersonDots(12)}</div>`, iconSize: [70, 70] }),
-          interactive: false
-        }).addTo(leafletMap);
-        crowdMarkers.set(call.id, crowdMarker);
-      }
-      const marker = L.marker([ll.lat, ll.lng], { icon: incidentIcon(call, state.selectedCall === call.id) })
-        .addTo(leafletMap)
-        .on('click', (event) => {
-          L.DomEvent.stopPropagation(event);
-          handlers.onIncidentClick(call.id);
-        });
-      incidentMarkers.set(call.id, marker);
-    });
-    state.units.forEach((unit) => {
-      const ll = percentToLatLng(C.mapBounds, unit.x, unit.y);
-      const marker = L.marker([ll.lat, ll.lng], { icon: unitIcon(unit, state.selectedUnit === unit.id), zIndexOffset: 500 })
-        .addTo(leafletMap)
-        .on('click', (event) => {
-          L.DomEvent.stopPropagation(event);
-          handlers.onSelectUnit(unit.id);
-        });
-      unitMarkers.set(unit.id, marker);
-    });
-    renderRoute(state);
-  }
-
-  // Se llama en cada frame: solo mueve los marcadores ya existentes, sin reconstruir el mapa.
-  function updatePositions(state) {
-    state.units.forEach((unit) => {
-      const marker = unitMarkers.get(unit.id);
-      if (marker) {
-        const ll = percentToLatLng(C.mapBounds, unit.x, unit.y);
-        marker.setLatLng([ll.lat, ll.lng]);
-      }
-    });
-    renderRoute(state);
-  }
-
-  function renderUnits(state, onSelectUnit) {
-    dom.unitList.innerHTML = '';
-    state.units.forEach((unit) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = `unit${state.selectedUnit === unit.id ? ' selected' : ''}${unit.status === 'busy' ? ' busy' : ''}`;
-      button.setAttribute('aria-pressed', String(state.selectedUnit === unit.id));
-      button.disabled = unit.status === 'busy';
-      button.innerHTML = `<div class="unit-top"><span class="unit-id">${escapeHtml(unit.id)}</span><span class="status ${unit.status === 'busy' ? 'busy' : ''}">${unit.status === 'busy' ? 'En servicio' : 'Disponible'}</span></div><div class="unit-bottom"><span class="unit-type">${escapeHtml(unit.type)}</span></div><div class="unit-bottom"><span>${escapeHtml(unit.location)}</span><span>${unit.progress}%</span></div><div class="unit-progress"><span style="width:${unit.progress}%"></span></div>`;
-      button.addEventListener('click', () => onSelectUnit(unit.id));
-      dom.unitList.append(button);
-    });
-    dom.unitCount.textContent = String(state.units.filter((unit) => unit.status === 'free').length);
-  }
-
-  function renderSummary(state) {
-    const unit = state.units.find((item) => item.id === state.selectedUnit);
-    dom.patrolHint.hidden = !unit;
-    const activeCrowd = state.calls.some((item) => item.crowd && item.status !== 'done');
-    dom.mapTip.textContent = unit
-      ? `${unit.id} lista. Toca un aviso para despacharla o el mapa para patrulla.`
-      : activeCrowd
-        ? 'Manifestación activa · toca un grupo libre y después un aviso.'
-        : 'Toca un grupo libre y después un aviso para despacharlo.';
-    dom.served.textContent = String(state.served);
-    dom.trust.textContent = `${Math.round(state.trust)}%`;
-    dom.trust.className = `metric-value ${state.trust >= 65 ? 'good' : 'warn'}`;
-    dom.available.textContent = `${state.units.filter((item) => item.status === 'free').length} / ${state.units.length}`;
-    dom.response.textContent = state.served ? `${Math.round(state.responseTotal / state.served)} min` : '—';
-    dom.score.textContent = String(Math.round(state.score));
-  }
-
-  function renderLog(state) {
-    dom.log.innerHTML = '';
-    state.logEntries.slice(0, 5).forEach((entry) => {
-      const row = document.createElement('div');
-      row.className = 'log-row';
-      row.innerHTML = `<span class="log-time">${escapeHtml(entry.time)}</span><span>${escapeHtml(entry.text)}</span>`;
-      dom.log.append(row);
-    });
-  }
-
-  function renderHistory(state) {
-    dom.historyList.innerHTML = '';
-    C.districtNames.forEach((district) => {
-      const row = document.createElement('div');
-      row.className = 'history-row';
-      row.innerHTML = `<span>${escapeHtml(district)}</span><strong>${state.districtHistory[district] || 0}</strong>`;
-      dom.historyList.append(row);
-    });
-  }
-
-  function renderSpeedControls(state) {
-    dom.speedButtons.forEach((button) => {
-      const value = Number(button.dataset.speed);
-      button.classList.toggle('active', value === state.speed);
-    });
-    dom.pauseBtn.textContent = state.paused ? 'Reanudar' : 'Pausa';
-    dom.pauseBtn.setAttribute('aria-pressed', String(state.paused));
-    dom.soundBtn.textContent = state.soundOn ? '🔊 Sonido' : '🔈 Sin sonido';
-    dom.soundBtn.setAttribute('aria-pressed', String(!state.soundOn));
-  }
-
-  function renderClockOnly(state) {
-    dom.clock.textContent = timeString(state.clockMinutes);
-  }
-
-  function renderObjective(state) {
-    if (!dom.objectiveBanner) return;
-    if (state.scenarioKey === 'libre' || state.shiftMinutes == null) {
-      dom.objectiveBanner.hidden = true;
+  function renderHeader(state) {
+    if (!state) {
+      topbar.innerHTML = '<div class="brand">SdP <span>Carrera policial</span></div>';
       return;
     }
-    dom.objectiveBanner.hidden = false;
-    const elapsed = state.clockMinutes - state.startClock;
-    const remaining = Math.max(0, Math.round(state.shiftMinutes - elapsed));
-    const label = C.scenarios[state.scenarioKey] ? C.scenarios[state.scenarioKey].label : 'Turno';
-    dom.objectiveBanner.innerHTML = `<strong>${escapeHtml(label)}</strong> · Objetivo: ${state.served}/${state.targetServed} avisos resueltos · quedan ${remaining} min`;
+    const strikes = '●'.repeat(Math.min(state.strikes, 5)) + '○'.repeat(Math.max(0, 3 - state.strikes));
+    topbar.innerHTML = `<div class="brand">SdP <span>Carrera policial</span></div>
+      <div class="agent-info">
+        <div><strong>${esc(state.name)}</strong><br><small class="muted">${esc(C.ranks[state.rank])}</small></div>
+        <div class="meter"><small>Reputación ${state.rep}</small><div class="meter-bar"><span style="width:${state.rep}%"></span></div></div>
+        <div class="meter"><small>Expediente</small><span class="strikes" title="Sanciones">${strikes}</span></div>
+      </div>`;
   }
 
-  function reportHtml(state) {
-    const rows = (state.report || []).map((r) => `<div class="report-row ${r.failed ? 'bad' : 'ok'}">
-      <div class="report-top"><strong>${escapeHtml(r.id)} · ${escapeHtml(r.place)}</strong><span>${r.failed ? 'Complicación' : 'Resuelto'} · ${r.trustDelta >= 0 ? '+' : ''}${r.trustDelta}% confianza</span></div>
-      <div class="report-line">${escapeHtml(r.units.join(', '))} · tensión final ${r.tension}% · ${r.minutes} min</div>
-      <div class="report-line">Órdenes: ${r.orders.length ? escapeHtml(r.orders.join(' › ')) : 'ninguna'} · Cierre: ${escapeHtml(r.closing)}${r.chain ? ` · generó ${escapeHtml(r.chain)}` : ''}</div>
-    </div>`).join('');
-    return `<div class="eyebrow report-title">Informe del turno</div><div class="report-list">${rows || '<p class="scene-intro">No se cerró ninguna intervención.</p>'}</div>`;
-  }
-
-  function renderEndScreen(state) {
-    if (!state.gameOver) {
-      dom.endOverlay.hidden = true;
-      return;
-    }
-    dom.endOverlay.hidden = false;
-    dom.endTitle.textContent = state.gameOver.won ? '✅ Turno superado' : '❌ Turno fallido';
-    dom.endTitle.className = state.gameOver.won ? 'end-title won' : 'end-title lost';
-    const reasonText = state.gameOver.reason === 'confianza'
-      ? 'La confianza vecinal llegó a 0.'
-      : state.gameOver.won
-        ? 'Cumpliste el objetivo antes de que acabara el turno.'
-        : 'Se acabó el turno sin cumplir el objetivo.';
-    dom.endStats.innerHTML = `<p>${escapeHtml(reasonText)}</p><div class="end-stat-grid">
-      <div><span>Avisos atendidos</span><strong>${state.served}</strong></div>
-      <div><span>Confianza final</span><strong>${Math.round(state.trust)}%</strong></div>
-      <div><span>Puntuación</span><strong>${Math.round(state.score)}</strong></div>
-    </div>${reportHtml(state)}`;
-  }
-
-  function renderStartOverlay(visible) {
-    dom.startOverlay.hidden = !visible;
-    if (visible) showMenuStep('select');
-  }
-
-  function showMenuStep(step) {
-    dom.menuSelect.hidden = step !== 'select';
-    dom.menuBrief.hidden = step !== 'brief';
-  }
-
-  function renderBriefing(scenarioKey) {
-    const scenario = C.scenarios[scenarioKey];
-    if (!scenario) return;
-    dom.briefTitle.textContent = scenario.label;
-    dom.briefText.textContent = scenario.briefing;
-    const metaParts = [];
-    if (scenario.shiftMinutes != null) {
-      metaParts.push(`Duración: ${Math.round(scenario.shiftMinutes / 60 * 10) / 10}h de turno`);
-      metaParts.push(`Objetivo: ${scenario.targetServed} avisos resueltos`);
-    } else {
-      metaParts.push('Sin límite de tiempo ni objetivo');
-    }
-    dom.briefMeta.textContent = metaParts.join(' · ');
-    showMenuStep('brief');
-  }
-
-  function renderDifficultyBox(state) {
-    const config = C.difficultyConfig[state.difficulty];
-    dom.difficultyLabel.textContent = config.label;
-    if (dom.difficultySelect) dom.difficultySelect.value = state.difficulty;
-  }
-
-  // Escena a pantalla completa cuando una unidad llega a un aviso: texto de la
-  // situación y opciones. Solo se reconstruye por un evento discreto (no en
-  // cada frame), así que es seguro reescribir el innerHTML.
-  // Escena visual: civiles agitados según la tensión y los agentes de cada grupo
-  // enviado, con su formación según la última orden.
-  function sceneStageHtml(call, units, mood, lastOrder) {
-    const civCount = call.crowd ? 16 : ({ N: 8, A: 2, T: 5, V: 3, D: 8, I: 2, M: 16 }[call.kind] || 6);
-    const civilians = Array.from({ length: civCount }, (_, i) =>
-      `<span class="stage-civil" style="left:${30 + (i * 37) % 40}%;top:${22 + (i * 53) % 56}%;${wanderStyle(i + 3, 10)}"></span>`).join('');
-    const agents = units.map((unit, g) => {
-      const typeInfo = C.unitTypes[unit.type] || { short: 'uip' };
-      const count = typeInfo.short === 'uip' ? 4 : typeInfo.short === 'moto' ? 2 : 3;
-      return Array.from({ length: count }, (_, k) =>
-        `<span class="stage-agent agent-${typeInfo.short}" style="left:${6 + k * 5}%;top:${14 + g * 17}%;animation-delay:${(g * 3 + k) * 0.12}s"><i>${k === 0 ? escapeHtml(unit.id) : ''}</i></span>`).join('');
-    }).join('');
-    const orderClass = lastOrder ? ` order-${lastOrder}` : '';
-    return `<div class="scene-stage kind-${escapeHtml(call.kind)} ${mood || 'tense'}${orderClass}"><span class="stage-prop"></span>${civilians}${agents}</div>`;
-  }
-
-  function sceneUnits(state, call) {
-    const ids = Array.isArray(call.assignedTo) ? call.assignedTo : [call.assignedTo];
-    return ids.map((id) => state.units.find((item) => item.id === id)).filter(Boolean);
-  }
-
-  function tensionBarHtml(tension) {
-    const mood = Engine.moodOf(tension);
-    const label = mood === 'calm' ? 'Calmada' : mood === 'tense' ? 'Tensa' : 'Violenta';
-    return `<div class="tension-box"><div class="tension-top"><span>Tensión de la multitud</span><strong class="tension-${mood}">${label} · ${Math.round(tension)}%</strong></div><div class="tension-bar"><span class="tension-${mood}" style="width:${Math.round(tension)}%"></span></div></div>`;
-  }
-
-  // Cuando un grupo llega, la escena pausa el juego: se ven los agentes, se dan
-  // órdenes (que mueven la tensión) y al final se cierra con una decisión.
-  function renderSceneOverlay(state, handlers) {
-    const call = state.calls.find((item) => item.status === 'awaiting_decision');
-    if (!call) {
-      dom.sceneOverlay.hidden = true;
-      dom.sceneOverlay.innerHTML = '';
-      return;
-    }
-    const units = sceneUnits(state, call);
-    lastSceneCall = call;
-    lastSceneUnits = units;
-    const scene = call.scene || { tension: 40, round: 0, lastOrder: null, orders: [] };
-    const mood = Engine.moodOf(scene.tension);
-    const script = Engine.getSceneScript(call.kind);
-    const intro = script.intro.replace('{location}', call.place || call.location);
-    const orderButtons = C.sceneOrders
-      .map((order) => `<button type="button" class="order-btn" data-order="${escapeHtml(order.id)}" title="${escapeHtml(order.hint)}">${escapeHtml(order.label)}</button>`).join('');
-    const optionsHtml = script.options
-      .map((option) => `<button type="button" class="scene-option" data-option="${escapeHtml(option.id)}">${escapeHtml(option.label)}</button>`).join('');
-    const chips = units.map((unit) => `<span class="scene-unit-chip">${escapeHtml(unit.id)} · ${escapeHtml(unit.type)}</span>`).join('');
-    const lastOrders = (scene.orders || []).slice(-3).map((o) => `${escapeHtml(o.label)} → ${o.tension}%`).join(' · ');
-    dom.sceneOverlay.hidden = false;
-    dom.sceneOverlay.innerHTML = `<div class="overlay-card scene-card">
-      <div class="eyebrow">${escapeHtml(call.id)} · ${escapeHtml(call.place || call.location)}</div>
-      <h2>${escapeHtml(script.title)}</h2>
-      ${sceneStageHtml(call, units, mood, scene.lastOrder)}
-      ${tensionBarHtml(scene.tension)}
-      <div class="scene-units">${chips}</div>
-      <p class="scene-intro">${escapeHtml(intro)}</p>
-      <div class="eyebrow">Órdenes a los grupos</div>
-      <div class="order-row">${orderButtons}</div>
-      <p class="scene-history">${lastOrders || 'Aún no has dado órdenes.'}</p>
-      <div class="eyebrow">Cerrar la intervención</div>
-      <div class="scene-options">${optionsHtml}</div>
-    </div>`;
-    dom.sceneOverlay.querySelectorAll('[data-order]').forEach((button) => {
-      button.addEventListener('click', () => handlers.onSceneOrder(call.id, button.dataset.order));
-    });
-    dom.sceneOverlay.querySelectorAll('[data-option]').forEach((button) => {
-      button.addEventListener('click', () => handlers.onSceneChoice(call.id, button.dataset.option));
-    });
-  }
-
-  function showSceneResult({ callId, title, text, trustDelta, failed, chain }, onContinue) {
-    const sign = trustDelta > 0 ? '+' : '';
-    const resultStage = lastSceneCall ? sceneStageHtml(lastSceneCall, lastSceneUnits, failed ? 'violent' : 'calm', failed ? null : 'linea') : '';
-    const chainHtml = chain ? `<p class="scene-chain">⚠ Se extiende: nuevo aviso ${escapeHtml(chain.id)} en ${escapeHtml(chain.place)}.</p>` : '';
-    dom.sceneOverlay.hidden = false;
-    dom.sceneOverlay.innerHTML = `<div class="overlay-card scene-card">
-      <div class="eyebrow">${escapeHtml(callId)} · ${failed ? 'complicación' : 'resultado'}</div>
-      <h2>${escapeHtml(title)}</h2>
-      ${resultStage}
-      <p class="scene-intro">${escapeHtml(text)}</p>
-      <p class="scene-trust ${trustDelta >= 0 ? 'good' : 'warn'}">Confianza vecinal: ${sign}${trustDelta}%</p>
-      ${chainHtml}
-      <div class="scene-options"><button type="button" class="primary" id="scene-continue">Continuar</button></div>
-    </div>`;
-    document.getElementById('scene-continue').addEventListener('click', onContinue);
-  }
-
-  function renderDispatchPanel(call, freeUnits, onConfirm, onCancel) {
-    if (!call) { hideDispatchPanel(); return; }
-    const rows = freeUnits.map((unit) => `
-      <label class="dispatch-unit-row">
-        <input type="checkbox" value="${escapeHtml(unit.id)}" />
-        <span class="dispatch-unit-id">${escapeHtml(unit.id)}</span>
-        <span class="dispatch-unit-type">${escapeHtml(unit.type)} · ${escapeHtml(unit.location)}</span>
-      </label>`).join('');
-    dom.dispatchOverlay.hidden = false;
-    dom.dispatchOverlay.innerHTML = `<div class="overlay-card dispatch-card">
-      <div class="eyebrow">${escapeHtml(call.id)} · ${escapeHtml(call.location)}</div>
-      <h2>${escapeHtml(call.title)}</h2>
-      <p class="scene-intro">Elige qué grupos enviar a este aviso.</p>
-      <div class="dispatch-unit-list">${rows || '<p class="scene-intro">No hay grupos libres.</p>'}</div>
-      <div class="scene-options dispatch-actions-row">
-        <button type="button" class="mini-btn" id="dispatch-cancel">Cancelar</button>
-        <button type="button" class="primary" id="dispatch-confirm" disabled>Enviar grupos</button>
+  function renderStart(hasSave, cb) {
+    renderHeader(null);
+    setView(`<section class="card">
+      <div class="eyebrow">Simulador</div>
+      <h2>Tu carrera en la policía</h2>
+      <p class="lead">Entra en la Academia, supera las pruebas, haz las prácticas y sal a la calle. Cada decisión cuenta: lo que haces en los servicios y lo que escribes en tus informes decide si asciendes, te sancionan o acabas fuera del cuerpo.</p>
+      <label class="field">Nombre de tu agente
+        <input type="text" id="name" maxlength="24" placeholder="Ej. García">
+      </label>
+      <div class="row">
+        <button class="btn primary" id="new">Empezar carrera</button>
+        ${hasSave ? '<button class="btn" id="continue">Continuar partida guardada</button>' : ''}
       </div>
-    </div>`;
-    const boxes = Array.from(dom.dispatchOverlay.querySelectorAll('input[type="checkbox"]'));
-    const confirmBtn = document.getElementById('dispatch-confirm');
-    boxes.forEach((cb) => cb.addEventListener('change', () => { confirmBtn.disabled = !boxes.some((x) => x.checked); }));
-    confirmBtn.addEventListener('click', () => onConfirm(boxes.filter((x) => x.checked).map((x) => x.value)));
-    document.getElementById('dispatch-cancel').addEventListener('click', onCancel);
+    </section>`);
+    $('#new').addEventListener('click', () => cb.onNew($('#name').value));
+    if (hasSave) $('#continue').addEventListener('click', cb.onContinue);
   }
 
-  function hideDispatchPanel() {
-    dom.dispatchOverlay.hidden = true;
-    dom.dispatchOverlay.innerHTML = '';
+  function historyHtml(state) {
+    const rows = state.history.slice(0, 8).map((entry) => `<div class="history-row ${esc(entry.kind)}">${esc(entry.title)}<small>${esc(entry.note)}</small></div>`).join('');
+    return `<div class="eyebrow" style="margin-top:16px">Expediente</div><div class="history">${rows}</div>`;
   }
 
-  function notify(message) {
-    dom.toast.textContent = message;
-    dom.toast.classList.add('show');
-    window.clearTimeout(notify.timeout);
-    notify.timeout = window.setTimeout(() => dom.toast.classList.remove('show'), 2200);
+  function renderHub(state, cb) {
+    renderHeader(state);
+    if (state.stage === 'baja') { renderEnd(state, cb); return; }
+    if (state.stage === 'academia') {
+      const defs = [
+        { id: 'teorico', name: 'Examen teórico', desc: '8 preguntas tipo test sobre legislación y protocolos.' },
+        { id: 'fisico', name: 'Prueba física', desc: 'Carrera de 12 segundos alternando dos teclas.' },
+        { id: 'practico', name: 'Prueba práctica', desc: 'Intervención simulada con un instructor, y después tu informe.' }
+      ];
+      const cards = defs.map((def) => {
+        const grade = state.academy.grades[def.id];
+        const attempts = state.academy.attempts[def.id];
+        const tag = grade !== null ? `<span class="tag good">Apto · ${grade}</span>`
+          : attempts > 0 ? `<span class="tag bad">No apto · ${attempts}/${Engine.MAX_ATTEMPTS}</span>` : '<span class="tag">Pendiente</span>';
+        const last = attempts === Engine.MAX_ATTEMPTS - 1 && grade === null;
+        return `<div class="module"><h3>${esc(def.name)}</h3>${tag}<p class="muted">${esc(def.desc)}</p>
+          <button class="btn primary" data-module="${def.id}" ${grade !== null ? 'disabled' : ''}>${grade !== null ? 'Superado' : last ? 'Última convocatoria' : 'Empezar'}</button></div>`;
+      }).join('');
+      setView(`<section class="card"><div class="eyebrow">Academia de Policía</div><h2>Fase de formación</h2>
+        <p class="lead">Debes aprobar las tres pruebas (nota mínima 5). Tienes dos convocatorias por prueba: si suspendes dos veces la misma, causas baja.</p>
+        <div class="module-grid">${cards}</div>${historyHtml(state)}</section>`);
+      $$('[data-module]').forEach((button) => button.addEventListener('click', () => cb.onModule(button.dataset.module)));
+      return;
+    }
+    if (state.stage === 'practicas') {
+      const done = state.practicas.grades.length;
+      setView(`<section class="card"><div class="eyebrow">Periodo de prácticas · intento ${state.practicas.round}/2</div><h2>Servicios con tu tutor</h2>
+        <p class="lead">Atiendes ${Engine.PRACTICAS_TOTAL} avisos con un tutor que evalúa cómo respondes, cómo actúas y cómo informas. Necesitas una media de 5 o más.</p>
+        <div class="progress"><span style="width:${(done / Engine.PRACTICAS_TOTAL) * 100}%"></span></div>
+        <p class="muted">Servicios hechos: ${done}/${Engine.PRACTICAS_TOTAL}${done ? ` · notas: ${state.practicas.grades.join(', ')}` : ''}</p>
+        <div class="row" style="margin-top:14px"><button class="btn primary" id="go">Salir de servicio con el tutor</button></div>${historyHtml(state)}</section>`);
+      $('#go').addEventListener('click', cb.onPracticas);
+      return;
+    }
+    const sv = state.servicio;
+    const suspended = state.suspended > 0;
+    setView(`<section class="card"><div class="eyebrow">Servicio activo · turno ${sv.turn + 1}</div><h2>${suspended ? 'Suspendido de empleo' : 'En la calle'}</h2>
+      <p class="lead">${suspended
+        ? `Estás suspendido ${state.suspended} turno(s) más. No puedes atender avisos hasta cumplir la suspensión.`
+        : `Llevas ${sv.callsDone}/${Engine.CALLS_PER_TURN} avisos en este turno y ${sv.served} atendidos en total. Para ascender: reputación 75 o más, 8 servicios y como máximo 1 sanción.`}</p>
+      <div class="row"><button class="btn primary" id="go">${suspended ? 'Cumplir turno de suspensión' : 'Atender nuevo aviso'}</button></div>${historyHtml(state)}</section>`);
+    $('#go').addEventListener('click', suspended ? cb.onSuspension : cb.onService);
   }
 
-  function renderAll(state, handlers) {
-    renderClockOnly(state);
-    renderMap(state, handlers);
-    renderUnits(state, handlers.onSelectUnit);
-    renderSummary(state);
-    renderLog(state);
-    renderHistory(state);
-    renderDifficultyBox(state);
-    renderSpeedControls(state);
-    renderObjective(state);
-    renderEndScreen(state);
-    renderSceneOverlay(state, handlers);
+  // --- examen ---
+  function renderExam(questions, onFinish) {
+    const answers = [];
+    let index = 0;
+    function show() {
+      const question = questions[index];
+      setView(`<section class="card"><div class="eyebrow">Examen teórico · ${index + 1}/${questions.length}</div>
+        <div class="progress"><span style="width:${(index / questions.length) * 100}%"></span></div>
+        <h2 style="font-size:1.2rem;margin-bottom:14px">${esc(question.q)}</h2>
+        ${question.options.map((option, i) => `<button class="option" data-i="${i}">${esc(option)}</button>`).join('')}</section>`);
+      $$('[data-i]').forEach((button) => button.addEventListener('click', () => {
+        answers[index] = Number(button.dataset.i);
+        index += 1;
+        if (index >= questions.length) onFinish(answers); else show();
+      }));
+    }
+    show();
+  }
+
+  function examReviewHtml(questions, answers) {
+    return `<div class="review">${questions.map((question, i) => {
+      const ok = answers[i] === question.answer;
+      return `<div class="review-item ${ok ? 'ok' : ''}"><strong>${esc(question.q)}</strong><br>${ok ? 'Correcto' : `Tu respuesta: ${esc(question.options[answers[i]] ?? '—')}`}<br><span class="muted">${ok ? '' : `Correcta: ${esc(question.options[question.answer])}. `}${esc(question.why)}</span></div>`;
+    }).join('')}</div>`;
+  }
+
+  // --- prueba física ---
+  function renderRun(onFinish) {
+    const DURATION = 12;
+    setView(`<section class="card"><div class="eyebrow">Prueba física</div><h2>Carrera de 12 segundos</h2>
+      <p class="lead">Alterna <strong>←</strong> y <strong>→</strong> (o <strong>A</strong> y <strong>D</strong>, o los botones) lo más rápido que puedas. Si pulsas dos veces el mismo lado, trompicas y pierdes metros. Con 90 m sacas un 10.</p>
+      <div class="track"><div class="runner" id="runner"></div><div class="finish"></div></div>
+      <div class="row"><span class="big-number" id="meters">0 m</span><span class="muted" id="clock">12.0 s</span></div>
+      <div class="run-pads"><button id="pad-l">←</button><button id="pad-r">→</button></div>
+      <div class="row"><button class="btn primary" id="start">Preparado, ¡ya!</button></div></section>`);
+    let distance = 0;
+    let last = null;
+    let running = false;
+    let endsAt = 0;
+    let timer = null;
+    function press(side) {
+      if (!running) return;
+      if (last === side) distance = Math.max(0, distance - 0.6); else distance += 1.3;
+      last = side;
+      distance = Math.min(distance, 100);
+      $('#runner').style.left = `calc(${distance}% - ${distance * 0.28}px)`;
+      $('#meters').textContent = `${Math.round(distance)} m`;
+    }
+    function onKey(event) {
+      if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') { event.preventDefault(); press('l'); }
+      if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') { event.preventDefault(); press('r'); }
+    }
+    document.addEventListener('keydown', onKey);
+    cleanup = () => { document.removeEventListener('keydown', onKey); if (timer) clearInterval(timer); };
+    $('#pad-l').addEventListener('pointerdown', () => press('l'));
+    $('#pad-r').addEventListener('pointerdown', () => press('r'));
+    $('#start').addEventListener('click', () => {
+      $('#start').disabled = true;
+      let count = 3;
+      $('#clock').textContent = `${count}…`;
+      const countdown = setInterval(() => {
+        count -= 1;
+        if (count > 0) { $('#clock').textContent = `${count}…`; return; }
+        clearInterval(countdown);
+        running = true;
+        endsAt = performance.now() + DURATION * 1000;
+        timer = setInterval(() => {
+          const left = Math.max(0, (endsAt - performance.now()) / 1000);
+          $('#clock').textContent = `${left.toFixed(1)} s`;
+          if (left <= 0) {
+            running = false;
+            clearInterval(timer);
+            timer = null;
+            onFinish(distance);
+          }
+        }, 80);
+      }, 800);
+    });
+  }
+
+  // --- llamada y envío de refuerzos ---
+  function renderCall({ incident, label, tip }, onSend) {
+    const options = C.supportOptions.map((option) => `<label class="support"><input type="checkbox" value="${option.id}"><div>${esc(option.label)}<small>${esc(option.desc)}</small></div></label>`).join('');
+    setView(`<section class="card"><div class="eyebrow">${esc(label)} · llamada al 091</div><h2>${esc(incident.title)}</h2>
+      <p class="muted">${esc(incident.place)}</p>
+      <div class="call-box">${esc(incident.call)}</div>
+      ${tip ? `<div class="tip">${esc(tip)}</div>` : ''}
+      <p class="lead" style="margin-bottom:8px">Tu patrulla acude siempre. ¿Qué refuerzos envías?</p>
+      <div class="support-grid">${options}</div>
+      <div class="row"><button class="btn primary" id="send">Acudir al lugar</button></div></section>`);
+    $('#send').addEventListener('click', () => onSend($$('.support input:checked').map((input) => input.value)));
+  }
+
+  // --- escena en tiempo real ---
+  function renderScene({ incident, support, label }, onDone) {
+    const sim = Scene.create({ incident, support });
+    const selected = new Set(sim.squads.map((squad) => squad.id));
+    setView(`<section class="card">
+      <div class="scene-head"><div><div class="eyebrow">${esc(label)} · ${esc(incident.place)}</div><h2>${esc(incident.title)}</h2></div></div>
+      <div class="canvas-wrap"><canvas id="sc-canvas" width="800" height="480"></canvas>
+        <div class="canvas-overlay" id="sc-intro"><div>
+          <p class="lead">Elige a qué grupos das órdenes (botones de arriba) y usa las órdenes o las teclas <strong>1-5</strong>. Mantén baja la tensión: si llega al 100% se descontrola. Los civiles rojos están agitados.</p>
+          <button class="btn primary" id="sc-start">Comenzar intervención</button></div></div>
+        <div class="canvas-overlay" id="sc-end" hidden><div class="banner" id="sc-banner"></div></div></div>
+      <div class="hud">
+        <div><div class="hud-label"><span>Tensión</span><strong id="sc-tlabel"></strong></div><div class="bar"><span id="sc-tbar"></span></div></div>
+        <div><div class="hud-label"><span>Tiempo</span><span id="sc-clock"></span></div><div class="bar"><span id="sc-timebar" style="background:var(--blue)"></span></div></div>
+      </div>
+      <div class="squads" id="sc-squads">${sim.squads.map((squad) => `<button class="chip on" data-squad="${squad.id}">${esc(squad.type.name)}<small id="st-${squad.id}">Mantener línea</small></button>`).join('')}</div>
+      <div class="stances">${C.stances.map((stance) => `<button class="stance" data-stance="${stance.id}"><kbd>${stance.key}</kbd>${esc(stance.label)}</button>`).join('')}</div>
+      <div class="feed" id="sc-feed"></div></section>`);
+
+    const canvas = $('#sc-canvas');
+    const ctx = canvas.getContext('2d');
+    Scene.draw(ctx, sim, canvas.width, canvas.height);
+    const stanceLabel = (id) => C.stances.find((item) => item.id === id).label;
+
+    function give(stanceId) {
+      Scene.setStance(sim, Array.from(selected), stanceId);
+      sim.squads.forEach((squad) => { $(`#st-${squad.id}`).textContent = stanceLabel(sim.stance[squad.id]); });
+    }
+    $$('[data-squad]').forEach((button) => button.addEventListener('click', () => {
+      const id = button.dataset.squad;
+      if (selected.has(id)) { if (selected.size > 1) selected.delete(id); } else selected.add(id);
+      button.classList.toggle('on', selected.has(id));
+    }));
+    $$('[data-stance]').forEach((button) => button.addEventListener('click', () => give(button.dataset.stance)));
+
+    let raf = null;
+    let last = null;
+    let started = false;
+    function onKey(event) {
+      const stance = C.stances.find((item) => item.key === event.key);
+      if (stance && started && !sim.done) give(stance.id);
+    }
+    document.addEventListener('keydown', onKey);
+    cleanup = () => { document.removeEventListener('keydown', onKey); if (raf) cancelAnimationFrame(raf); };
+
+    function hud() {
+      const mood = Scene.moodOf(sim.tension);
+      const label = mood === 'calm' ? 'Calmada' : mood === 'tense' ? 'Tensa' : 'Violenta';
+      $('#sc-tlabel').textContent = `${label} · ${Math.round(sim.tension)}%`;
+      const bar = $('#sc-tbar');
+      bar.style.width = `${Math.round(sim.tension)}%`;
+      bar.className = `t-${mood}`;
+      $('#sc-clock').textContent = `${Math.max(0, Math.ceil(sim.limit - sim.time))} s`;
+      $('#sc-timebar').style.width = `${Math.min(100, (sim.time / sim.limit) * 100)}%`;
+      $('#sc-feed').innerHTML = sim.feed.map((line) => `<div>${esc(line)}</div>`).join('');
+    }
+
+    function frame(timestamp) {
+      if (last === null) last = timestamp;
+      Scene.step(sim, (timestamp - last) / 1000);
+      last = timestamp;
+      Scene.draw(ctx, sim, canvas.width, canvas.height);
+      hud();
+      if (sim.done) {
+        const banner = { calm: 'Situación calmada', partial: 'Fin del servicio', escalated: '¡Se ha descontrolado!' }[sim.done];
+        $('#sc-banner').textContent = banner;
+        $('#sc-end').hidden = false;
+        raf = null;
+        setTimeout(() => onDone(Scene.outcome(sim)), 1400);
+        return;
+      }
+      raf = requestAnimationFrame(frame);
+    }
+    hud();
+    $('#sc-start').addEventListener('click', () => {
+      $('#sc-intro').hidden = true;
+      started = true;
+      raf = requestAnimationFrame(frame);
+    });
+  }
+
+  // --- informe ---
+  function renderReport({ incident, outcome, label }, onSubmit) {
+    const orders = outcome.orders.length ? outcome.orders.slice(-8).map((line) => `<li>${esc(line)}</li>`).join('') : '<li>No diste ninguna orden.</li>';
+    setView(`<section class="card"><div class="eyebrow">${esc(label)} · informe</div><h2>Redacta el informe</h2>
+      <p class="lead">Debe ser veraz y completo. Se contrasta con lo que ocurrió de verdad. Ocultar el uso de la fuerza o los heridos es una falta grave.</p>
+      <div class="tip"><strong>Tus órdenes durante el servicio:</strong><ul class="notes" style="margin:6px 0 0">${orders}</ul></div>
+      <label class="field">Tipo de hecho<select id="r-type"><option value="">— elige —</option>${C.reportTypes.map((t) => `<option>${esc(t)}</option>`).join('')}</select></label>
+      <label class="field">Resultado del servicio<select id="r-result"><option value="">— elige —</option>${C.reportResults.map((t) => `<option>${esc(t)}</option>`).join('')}</select></label>
+      <div class="field">¿Se usó la fuerza (avance sobre la multitud o dispersión)?<div class="fieldset-row"><label><input type="radio" name="force" value="Sí"> Sí</label><label><input type="radio" name="force" value="No"> No</label></div></div>
+      <div class="field">¿Hubo heridos?<div class="fieldset-row"><label><input type="radio" name="inj" value="Sí"> Sí</label><label><input type="radio" name="inj" value="No"> No</label></div></div>
+      <label class="field">Narración de los hechos<textarea id="r-text" placeholder="Qué ocurrió, qué hicisteis y cómo terminó (mínimo 70 caracteres para nota completa)."></textarea></label>
+      <div class="row end"><button class="btn primary" id="r-send" disabled>Firmar y entregar</button></div></section>`);
+    function check() {
+      const ok = $('#r-type').value && $('#r-result').value && $('input[name=force]:checked') && $('input[name=inj]:checked');
+      $('#r-send').disabled = !ok;
+    }
+    $$('select, input').forEach((el) => el.addEventListener('change', check));
+    $('#r-send').addEventListener('click', () => onSubmit({
+      type: $('#r-type').value,
+      result: $('#r-result').value,
+      force: $('input[name=force]:checked').value,
+      injuries: $('input[name=inj]:checked').value,
+      text: $('#r-text').value
+    }));
+  }
+
+  // --- resultados genéricos ---
+  function notesHtml(notes) {
+    return `<ul class="notes">${notes.map((note) => `<li class="${note.neg ? 'neg' : ''}">${esc(note.t)}</li>`).join('')}</ul>`;
+  }
+
+  function renderResult({ title, kind, sections, extraHtml, button }, onContinue) {
+    const blocks = sections.map((section) => `<div class="divider"></div>
+      <div class="eyebrow">${esc(section.title)}</div>
+      ${section.score != null ? `<div class="score-row"><span class="score ${section.score >= Engine.PASS ? 'good' : 'bad'}">${round1(section.score)}</span><span class="muted">/ 10</span></div>` : ''}
+      ${section.notes && section.notes.length ? notesHtml(section.notes) : ''}`).join('');
+    setView(`<section class="card"><h2 class="end-title ${kind || ''}">${esc(title)}</h2>${blocks}${extraHtml || ''}
+      <div class="row end" style="margin-top:14px"><button class="btn primary" id="continue">${esc(button || 'Continuar')}</button></div></section>`);
+    $('#continue').addEventListener('click', onContinue);
+  }
+
+  function renderEnd(state, cb) {
+    renderHeader(state);
+    const expelled = state.end && state.end.kind === 'expulsion';
+    setView(`<section class="card"><div class="eyebrow">Fin de la carrera</div>
+      <h2 class="end-title bad">${expelled ? 'Expulsado del cuerpo' : 'Baja en el cuerpo'}</h2>
+      <p class="lead">${esc(state.end ? state.end.reason : '')}</p>
+      <p class="muted">Llegaste a ${esc(C.ranks[state.rank])} con ${state.servicio.served} servicios atendidos.</p>
+      ${historyHtml(state)}
+      <div class="row end" style="margin-top:14px"><button class="btn primary" id="again">Empezar una nueva carrera</button></div></section>`);
+    $('#again').addEventListener('click', cb.onNewCareer);
   }
 
   const api = {
-    cacheDom, initMap, getMap, zoomIn, zoomOut,
-    renderAll, updatePositions, renderClockOnly, renderObjective, renderSpeedControls,
-    renderStartOverlay, renderBriefing, showMenuStep,
-    showSceneResult, notify, renderDispatchPanel, hideDispatchPanel, renderSceneOverlay
+    init, renderHeader, renderStart, renderHub, renderExam, examReviewHtml, renderRun,
+    renderCall, renderScene, renderReport, renderResult, renderEnd
   };
-
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = api;
-  } else {
-    root.Render = api;
-  }
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.Render = api;
 })(
   typeof window !== 'undefined' ? window : globalThis,
   typeof window !== 'undefined'
-    ? { Utils: window.Utils, Engine: window.Engine, Constants: window.Constants }
-    : { Utils: require('./utils.js'), Engine: require('./engine.js'), Constants: require('./constants.js') }
+    ? { Utils: window.Utils, Constants: window.Constants, Scene: window.Scene, Engine: window.Engine }
+    : { Utils: require('./utils.js'), Constants: require('./constants.js'), Scene: require('./scene.js'), Engine: require('./engine.js') }
 );

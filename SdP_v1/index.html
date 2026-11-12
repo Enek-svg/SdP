@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101715">
+  <title>Distrito | Sala de coordinación</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark"><span>D</span></div>
+        <div><div class="brand-title">Distrito</div><div class="brand-sub">Centro de coordinación</div></div>
+      </div>
+      <div class="top-status">
+        <span class="shift-pill">Turno de mañana</span>
+        <span class="live">Servicio activo</span>
+        <span class="clock" id="clock">08:42</span>
+        <div class="speed-group" role="group" aria-label="Velocidad del tiempo">
+          <button type="button" class="mini-btn speed-btn" data-speed="1">1×</button>
+          <button type="button" class="mini-btn speed-btn" data-speed="3">3×</button>
+          <button type="button" class="mini-btn speed-btn" data-speed="6">6×</button>
+        </div>
+        <button type="button" class="mini-btn" id="pause-toggle" aria-pressed="false">Pausa</button>
+        <button type="button" class="mini-btn" id="sound-toggle" aria-pressed="false">🔊 Sonido</button>
+        <button type="button" class="mini-btn save-btn" id="save-session">Guardar</button>
+        <button type="button" class="mini-btn" id="menu-btn">Menú</button>
+      </div>
+    </header>
+
+    <div class="objective-banner" id="objective-banner" hidden aria-live="polite"></div>
+
+    <main class="layout">
+      <section class="column center" aria-label="Mapa">
+        <div class="map-head">
+          <div class="map-title"><h2>Mapa operativo</h2><span class="district-tag">Madrid · Puerta del Sol</span></div>
+          <div class="map-legend"><span class="legend-item"><i class="legend-dot"></i>Grupos</span><span class="legend-item"><i class="legend-dot call-dot"></i>Avisos</span><span class="legend-item"><i class="legend-dot crowd-dot"></i>Manifestación</span></div>
+        </div>
+        <div class="map" id="map" role="group" aria-label="Mapa operativo en calles reales">
+          <div id="map-canvas"></div>
+          <div class="map-tip" id="map-tip">Toca un aviso para elegir qué grupos enviar.</div>
+          <div class="patrol-hint" id="patrol-hint" hidden>Grupo seleccionado: toca el mapa para enviarlo de patrulla</div>
+          <div class="map-controls"><button type="button" aria-label="Acercar mapa" id="zoom-in">+</button><button type="button" aria-label="Alejar mapa" id="zoom-out">−</button></div>
+        </div>
+        <button class="primary advance" id="advance" type="button">Avanzar +15 min <span aria-hidden="true">→</span></button>
+      </section>
+
+      <aside class="column right" aria-label="Grupos y resumen de turno">
+        <div class="column-head"><div><div class="eyebrow">Recursos</div><h2>Grupos</h2></div><span class="count" id="unit-count">4</span></div>
+        <div class="unit-list" id="units"></div>
+        <div class="head-actions command-actions">
+          <button type="button" class="mini-btn" id="new-call">Nuevo aviso</button>
+          <button type="button" class="mini-btn" id="reset-turn">Reset</button>
+        </div>
+        <div class="section-break"><div class="eyebrow">Estado del turno</div></div>
+        <div class="metrics">
+          <div class="metric"><div class="metric-label">Confianza vecinal</div><div class="metric-value good" id="trust">78%</div></div>
+          <div class="metric"><div class="metric-label">Avisos atendidos</div><div class="metric-value" id="served">0</div></div>
+          <div class="metric"><div class="metric-label">Tiempo medio</div><div class="metric-value" id="response">—</div></div>
+          <div class="metric"><div class="metric-label">Grupos libres</div><div class="metric-value good" id="available">5 / 5</div></div>
+          <div class="metric"><div class="metric-label">Puntuación</div><div class="metric-value" id="score">0</div></div>
+          <div class="metric"><div class="metric-label">Dificultad</div><div class="metric-value" id="difficulty">Media</div></div>
+        </div>
+        <div class="difficulty-box">
+          <label for="difficulty-select">Nivel de dificultad</label>
+          <select id="difficulty-select">
+            <option value="facil">Fácil</option>
+            <option value="media" selected>Media</option>
+            <option value="dificil">Difícil</option>
+          </select>
+        </div>
+        <div class="section-break"><div class="eyebrow">Historial por distrito</div></div>
+        <div class="history-list" id="history-list" aria-live="polite"></div>
+        <div class="section-break"><div class="eyebrow">Registro reciente</div></div>
+        <div class="log" id="log" aria-live="polite"><div class="log-row"><span class="log-time">08:42</span><span>Turno iniciado. Grupos disponibles.</span></div></div>
+      </aside>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <div class="overlay" id="start-overlay" hidden>
+    <div class="overlay-card" id="menu-select">
+      <div class="eyebrow">Distrito · Sala de coordinación</div>
+      <h2>Elige el turno</h2>
+      <div class="scenario-grid">
+        <button type="button" class="scenario-card" data-scenario="normal">
+          <h3>Día normal</h3>
+          <p>Carga normal de avisos. Resuelve 7 antes de que acabe el turno (3h de juego) sin perder el control.</p>
+        </button>
+        <button type="button" class="scenario-card" data-scenario="disturbios">
+          <h3>Disturbios</h3>
+          <p>Manifestación activa y avisos graves sin parar. Aguanta 2h de turno sin que la confianza llegue a 0.</p>
+        </button>
+        <button type="button" class="scenario-card" data-scenario="libre">
+          <h3>Turno libre</h3>
+          <p>Sin objetivo ni límite de tiempo. Juega a tu ritmo, sin derrota por confianza.</p>
+        </button>
+      </div>
+    </div>
+    <div class="overlay-card" id="menu-brief" hidden>
+      <div class="eyebrow">Parte de inteligencia</div>
+      <h2 id="brief-title">Turno</h2>
+      <p class="brief-text" id="brief-text"></p>
+      <div class="brief-meta" id="brief-meta"></div>
+      <div class="end-actions">
+        <button type="button" class="mini-btn" id="brief-back-btn">Volver</button>
+        <button type="button" class="primary" id="brief-start-btn">Empezar <span aria-hidden="true">↗</span></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="dispatch-overlay" hidden></div>
+  <div class="overlay" id="scene-overlay" hidden></div>
+
+  <div class="overlay" id="end-overlay" hidden>
+    <div class="overlay-card end-card">
+      <h2 class="end-title" id="end-title">Turno terminado</h2>
+      <div id="end-stats"></div>
+      <div class="end-actions">
+        <button type="button" class="primary" id="retry-btn">Reintentar</button>
+        <button type="button" class="mini-btn" id="end-menu-btn">Elegir otro turno</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+  <script src="utils.js" defer></script>
+  <script src="constants.js" defer></script>
+  <script src="engine.js" defer></script>
+  <script src="render.js" defer></script>
+  <script src="main.js" defer></script>
+</body>
+</html>
