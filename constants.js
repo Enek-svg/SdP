@@ -2,7 +2,7 @@
 (function (root) {
   'use strict';
 
-  const STORAGE_KEY = 'sdp-sim-state-v3';
+  const STORAGE_KEY = 'sdp-sim-state-v4';
 
   const severityRank = { high: 3, medium: 2, low: 1 };
 
@@ -100,31 +100,53 @@
     }
   };
 
+  // Tipos de unidad: velocidad, fuerza de contención y capacidad de diálogo.
+  // `mando` reduce la deriva aleatoria de la multitud.
+  const unitTypes = {
+    'Grupo UIP': { short: 'uip', speed: 1, force: 1.6, dialogue: 0.5, command: 0 },
+    'Patrulla de proximidad': { short: 'prox', speed: 1.25, force: 0.8, dialogue: 1.3, command: 0 },
+    'Motos de apoyo': { short: 'moto', speed: 1.9, force: 0.5, dialogue: 0.7, command: 0 },
+    'Unidad de mando': { short: 'mando', speed: 1.1, force: 0.6, dialogue: 1.6, command: 1 }
+  };
+
+  // Órdenes que se dan durante la escena de un aviso. Mueven la tensión de la multitud.
+  const sceneOrders = [
+    { id: 'linea', label: 'Formar línea', hint: 'Presencia disuasoria' },
+    { id: 'dialogar', label: 'Dialogar', hint: 'Calma si aún no está caliente' },
+    { id: 'avanzar', label: 'Avanzar', hint: 'Presiona: arriesgado si hay tensión' },
+    { id: 'retroceder', label: 'Retroceder', hint: 'Baja la tensión, pierdes tiempo' },
+    { id: 'dispersar', label: 'Dispersar', hint: 'Muy efectivo o muy peligroso' }
+  ];
+
+  // Qué avisos se encadenan cuando una intervención sale mal.
+  const chainKinds = { M: 'D', D: 'A', T: 'A', N: 'V', V: 'N', A: 'A', I: 'V' };
+
   const callTemplates = [
-    { title: 'Ruidosos en local cerrado', location: 'Centro', severity: 'media', level: 'medium', x: 36, y: 56, kind: 'N' },
-    { title: 'Persona en situación de riesgo', location: 'San Miguel', severity: 'alta', level: 'high', x: 18, y: 30, kind: 'A' },
-    { title: 'Colisión menor en vía secundaria', location: 'Ribera', severity: 'media', level: 'medium', x: 70, y: 72, kind: 'T' },
-    { title: 'Falta de asistencia vecinal', location: 'La Estación', severity: 'prioridad baja', level: 'low', x: 68, y: 22, kind: 'V' },
-    { title: 'Varios disturbios en calle', location: 'Centro', severity: 'alta', level: 'high', x: 54, y: 40, kind: 'D' },
-    { title: 'Intervención no urgente', location: 'San Miguel', severity: 'prioridad baja', level: 'low', x: 26, y: 62, kind: 'I' },
-    { title: 'Auxilio en estación de buses', location: 'La Estación', severity: 'media', level: 'medium', x: 78, y: 44, kind: 'A' },
-    { title: 'Peatones bloqueando tráfico', location: 'Ribera', severity: 'prioridad baja', level: 'low', x: 59, y: 76, kind: 'T' },
-    { title: 'Manifestación vecinal · Plaza Mayor', location: 'Centro', severity: 'alta', level: 'high', x: 44, y: 49, kind: 'M', crowd: true }
+    { title: 'Ruidosos en local cerrado', location: 'Centro', place: 'Calle del Arenal', severity: 'media', level: 'medium', x: 15, y: 45, kind: 'N' },
+    { title: 'Persona en situación de riesgo', location: 'San Miguel', place: 'Mercado de San Miguel', severity: 'alta', level: 'high', x: 12, y: 62, kind: 'A' },
+    { title: 'Colisión menor en vía secundaria', location: 'Ribera', place: 'Plaza de Santa Ana', severity: 'media', level: 'medium', x: 67, y: 68, kind: 'T' },
+    { title: 'Falta de asistencia vecinal', location: 'La Estación', place: 'Red de San Luis', severity: 'prioridad baja', level: 'low', x: 61, y: 21, kind: 'V' },
+    { title: 'Varios disturbios en calle', location: 'Centro', place: 'Puerta del Sol', severity: 'alta', level: 'high', x: 49, y: 50, kind: 'D' },
+    { title: 'Intervención no urgente', location: 'San Miguel', place: 'Plaza Mayor', severity: 'prioridad baja', level: 'low', x: 23, y: 62, kind: 'I' },
+    { title: 'Auxilio en Gran Vía', location: 'La Estación', place: 'Gran Vía · Callao', severity: 'media', level: 'medium', x: 32, y: 25, kind: 'A' },
+    { title: 'Peatones bloqueando tráfico', location: 'Ribera', place: 'Cercanías del Congreso', severity: 'prioridad baja', level: 'low', x: 88, y: 66, kind: 'T' },
+    { title: 'Manifestación · Congreso de los Diputados', location: 'Ribera', place: 'Congreso de los Diputados', severity: 'alta', level: 'high', x: 92, y: 66, kind: 'M', crowd: true }
   ];
 
   const baseCalls = [
-    { id: 'AV-204', title: 'Incidencia vecinal · Plaza Mayor', location: 'Centro', severity: 'media', level: 'medium', x: 32, y: 62, kind: 'V', status: 'pending', minutes: 0 },
-    { id: 'AV-203', title: 'Apoyo a persona mayor', location: 'San Miguel', severity: 'prioridad baja', level: 'low', x: 22, y: 31, kind: 'A', status: 'pending', minutes: 0 },
-    { id: 'AV-202', title: 'Congestión · Puente de Ribera', location: 'Ribera', severity: 'media', level: 'medium', x: 72, y: 72, kind: 'T', status: 'pending', minutes: 0 },
-    { id: 'AV-201', title: 'Aviso de ruido · Estación', location: 'La Estación', severity: 'prioridad baja', level: 'low', x: 70, y: 30, kind: 'N', status: 'pending', minutes: 0 },
-    { id: 'AV-205', title: 'Manifestación vecinal · Plaza Mayor', location: 'Centro', severity: 'alta', level: 'high', x: 40, y: 51, kind: 'M', crowd: true, status: 'pending', minutes: 0 }
+    { id: 'AV-204', title: 'Incidencia vecinal · Plaza Mayor', location: 'Centro', place: 'Plaza Mayor', severity: 'media', level: 'medium', x: 23, y: 62, kind: 'V', status: 'pending', minutes: 0 },
+    { id: 'AV-203', title: 'Apoyo a persona mayor', location: 'San Miguel', place: 'Mercado de San Miguel', severity: 'prioridad baja', level: 'low', x: 12, y: 62, kind: 'A', status: 'pending', minutes: 0 },
+    { id: 'AV-202', title: 'Congestión · Plaza de Santa Ana', location: 'Ribera', place: 'Plaza de Santa Ana', severity: 'media', level: 'medium', x: 67, y: 68, kind: 'T', status: 'pending', minutes: 0 },
+    { id: 'AV-201', title: 'Aviso de ruido · Red de San Luis', location: 'La Estación', place: 'Red de San Luis', severity: 'prioridad baja', level: 'low', x: 61, y: 21, kind: 'N', status: 'pending', minutes: 0 },
+    { id: 'AV-205', title: 'Manifestación · Puerta del Sol', location: 'Centro', place: 'Puerta del Sol', severity: 'alta', level: 'high', x: 46, y: 47, kind: 'M', crowd: true, status: 'pending', minutes: 0 }
   ];
 
   const baseUnits = [
-    { id: 'G1', type: 'Grupo UIP', location: 'Base Centro', status: 'free', x: 49, y: 48, color: 'lime', progress: 85 },
+    { id: 'G1', type: 'Grupo UIP', location: 'Base Centro', status: 'free', x: 49, y: 54, color: 'lime', progress: 85 },
     { id: 'G2', type: 'Grupo UIP', location: 'Base Norte', status: 'free', x: 42, y: 22, color: 'lime', progress: 68 },
     { id: 'G3', type: 'Patrulla de proximidad', location: 'Base Ribera', status: 'free', x: 81, y: 58, color: 'cyan', progress: 92 },
-    { id: 'G4', type: 'Patrulla de proximidad', location: 'Base Estación', status: 'free', x: 57, y: 78, color: 'cyan', progress: 74 }
+    { id: 'G4', type: 'Motos de apoyo', location: 'Base Estación', status: 'free', x: 57, y: 78, color: 'cyan', progress: 74 },
+    { id: 'G5', type: 'Unidad de mando', location: 'Comisaría Centro', status: 'free', x: 53, y: 58, color: 'cyan', progress: 80 }
   ];
 
   // Caja geográfica real (Puerta del Sol, Madrid) sobre la que se proyectan
@@ -133,13 +155,13 @@
   const mapZoom = 16;
 
   const mapPoints = [
-    { label: 'H', name: 'Hospital del Distrito', type: 'hospital', x: 25, y: 18 },
-    { label: 'E', name: 'Estación Central', type: 'station', x: 82, y: 37 },
-    { label: 'C', name: 'Comisaría Centro', type: 'policia', x: 53, y: 58 },
-    { label: 'M', name: 'Mercado Municipal', type: 'civic', x: 82, y: 75 },
-    { label: 'J', name: 'Jardines de la Ribera', type: 'green', x: 18, y: 76 },
-    { label: 'B', name: 'Biblioteca de San Miguel', type: 'civic', x: 20, y: 38 },
-    { label: 'P', name: 'Parque Norte', type: 'green', x: 36, y: 18 }
+    { label: 'S', name: 'Puerta del Sol', type: 'civic', x: 49, y: 50 },
+    { label: 'A', name: 'Plaza Mayor', type: 'civic', x: 23, y: 62 },
+    { label: 'G', name: 'Gran Vía · Callao', type: 'civic', x: 32, y: 25 },
+    { label: 'D', name: 'Congreso de los Diputados', type: 'civic', x: 92, y: 66 },
+    { label: 'N', name: 'Plaza de Santa Ana', type: 'green', x: 67, y: 68 },
+    { label: 'L', name: 'Red de San Luis', type: 'station', x: 61, y: 21 },
+    { label: 'C', name: 'Comisaría Centro', type: 'policia', x: 53, y: 58 }
   ];
 
   // Turnos jugables, elegidos en la pantalla de inicio.
@@ -192,6 +214,9 @@
     difficultyConfig,
     scenarios,
     sceneScripts,
+    unitTypes,
+    sceneOrders,
+    chainKinds,
     callTemplates,
     baseCalls,
     baseUnits,

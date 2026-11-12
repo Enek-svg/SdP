@@ -119,12 +119,26 @@
     const result = Engine.resolveScene(state, callId, optionId);
     if (!result.ok) return;
     beep(result.failed ? 300 : 880, result.failed ? 260 : 150);
-    Render.showSceneResult({ callId, title: result.title, text: result.text, trustDelta: result.trustDelta, failed: result.failed }, () => {
+    Render.showSceneResult({ callId, title: result.title, text: result.text, trustDelta: result.trustDelta, failed: result.failed, chain: result.chain }, () => {
       refreshAll();
     });
   }
 
-  const handlers = { onSelectUnit: selectUnit, onIncidentClick, onSceneChoice };
+  // Una orden en la escena: actualiza la tensión; si se descontrola, termina sola.
+  function onSceneOrder(callId, orderId) {
+    const result = Engine.applyOrder(state, callId, orderId);
+    if (!result.ok) return;
+    if (result.finished) {
+      beep(300, 260);
+      Render.showSceneResult({ callId, title: result.title, text: result.text, trustDelta: result.trustDelta, failed: true, chain: result.chain }, () => refreshAll());
+      return;
+    }
+    beep(result.mood === 'violent' ? 340 : 620, 90);
+    Render.renderSceneOverlay(state, handlers);
+    Engine.saveState(state);
+  }
+
+  const handlers = { onSelectUnit: selectUnit, onIncidentClick, onSceneChoice, onSceneOrder };
 
   function refreshAll() {
     Render.renderAll(state, handlers);
@@ -204,6 +218,9 @@
     events.forEach((event) => {
       if (event.type === 'arrived') {
         beep(740, 160);
+      } else if (event.type === 'worsen') {
+        Render.notify('Un aviso desatendido se ha agravado.');
+        beep(400, 140);
       } else if (event.type === 'spawn') {
         beep(520, 120);
       } else if (event.type === 'gameover') {

@@ -12,6 +12,8 @@
   const incidentMarkers = new Map();
   const crowdMarkers = new Map();
   let routeLayers = [];
+  let lastSceneCall = null;
+  let lastSceneUnits = [];
 
   function cacheDom() {
     dom.unitList = document.getElementById('units');
@@ -266,6 +268,15 @@
     dom.objectiveBanner.innerHTML = `<strong>${escapeHtml(label)}</strong> · Objetivo: ${state.served}/${state.targetServed} avisos resueltos · quedan ${remaining} min`;
   }
 
+  function reportHtml(state) {
+    const rows = (state.report || []).map((r) => `<div class="report-row ${r.failed ? 'bad' : 'ok'}">
+      <div class="report-top"><strong>${escapeHtml(r.id)} · ${escapeHtml(r.place)}</strong><span>${r.failed ? 'Complicación' : 'Resuelto'} · ${r.trustDelta >= 0 ? '+' : ''}${r.trustDelta}% confianza</span></div>
+      <div class="report-line">${escapeHtml(r.units.join(', '))} · tensión final ${r.tension}% · ${r.minutes} min</div>
+      <div class="report-line">Órdenes: ${r.orders.length ? escapeHtml(r.orders.join(' › ')) : 'ninguna'} · Cierre: ${escapeHtml(r.closing)}${r.chain ? ` · generó ${escapeHtml(r.chain)}` : ''}</div>
+    </div>`).join('');
+    return `<div class="eyebrow report-title">Informe del turno</div><div class="report-list">${rows || '<p class="scene-intro">No se cerró ninguna intervención.</p>'}</div>`;
+  }
+
   function renderEndScreen(state) {
     if (!state.gameOver) {
       dom.endOverlay.hidden = true;
@@ -283,7 +294,7 @@
       <div><span>Avisos atendidos</span><strong>${state.served}</strong></div>
       <div><span>Confianza final</span><strong>${Math.round(state.trust)}%</strong></div>
       <div><span>Puntuación</span><strong>${Math.round(state.score)}</strong></div>
-    </div>`;
+    </div>${reportHtml(state)}`;
   }
 
   function renderStartOverlay(visible) {
@@ -321,6 +332,35 @@
   // Escena a pantalla completa cuando una unidad llega a un aviso: texto de la
   // situación y opciones. Solo se reconstruye por un evento discreto (no en
   // cada frame), así que es seguro reescribir el innerHTML.
+  // Escena visual: civiles agitados según la tensión y los agentes de cada grupo
+  // enviado, con su formación según la última orden.
+  function sceneStageHtml(call, units, mood, lastOrder) {
+    const civCount = call.crowd ? 16 : ({ N: 8, A: 2, T: 5, V: 3, D: 8, I: 2, M: 16 }[call.kind] || 6);
+    const civilians = Array.from({ length: civCount }, (_, i) =>
+      `<span class="stage-civil" style="left:${30 + (i * 37) % 40}%;top:${22 + (i * 53) % 56}%;${wanderStyle(i + 3, 10)}"></span>`).join('');
+    const agents = units.map((unit, g) => {
+      const typeInfo = C.unitTypes[unit.type] || { short: 'uip' };
+      const count = typeInfo.short === 'uip' ? 4 : typeInfo.short === 'moto' ? 2 : 3;
+      return Array.from({ length: count }, (_, k) =>
+        `<span class="stage-agent agent-${typeInfo.short}" style="left:${6 + k * 5}%;top:${14 + g * 17}%;animation-delay:${(g * 3 + k) * 0.12}s"><i>${k === 0 ? escapeHtml(unit.id) : ''}</i></span>`).join('');
+    }).join('');
+    const orderClass = lastOrder ? ` order-${lastOrder}` : '';
+    return `<div class="scene-stage kind-${escapeHtml(call.kind)} ${mood || 'tense'}${orderClass}"><span class="stage-prop"></span>${civilians}${agents}</div>`;
+  }
+
+  function sceneUnits(state, call) {
+    const ids = Array.isArray(call.assignedTo) ? call.assignedTo : [call.assignedTo];
+    return ids.map((id) => state.units.find((item) => item.id === id)).filter(Boolean);
+  }
+
+  function tensionBarHtml(tension) {
+    const mood = Engine.moodOf(tension);
+    const label = mood === 'calm' ? 'Calmada' : mood === 'tense' ? 'Tensa' : 'Violenta';
+    return `<div class="tension-box"><div class="tension-top"><span>Tensión de la multitud</span><strong class="tension-${mood}">${label} · ${Math.round(tension)}%</strong></div><div class="tension-bar"><span class="tension-${mood}" style="width:${Math.round(tension)}%"></span></div></div>`;
+  }
+
+  // Cuando un grupo llega, la escena pausa el juego: se ven los agentes, se dan
+  // órdenes (que mueven la tensión) y al final se cierra con una decisión.
   function renderSceneOverlay(state, handlers) {
     const call = state.calls.find((item) => item.status === 'awaiting_decision');
     if (!call) {
@@ -328,32 +368,53 @@
       dom.sceneOverlay.innerHTML = '';
       return;
     }
+    const units = sceneUnits(state, call);
+    lastSceneCall = call;
+    lastSceneUnits = units;
+    const scene = call.scene || { tension: 40, round: 0, lastOrder: null, orders: [] };
+    const mood = Engine.moodOf(scene.tension);
     const script = Engine.getSceneScript(call.kind);
-    const intro = script.intro.replace('{location}', call.location);
+    const intro = script.intro.replace('{location}', call.place || call.location);
+    const orderButtons = C.sceneOrders
+      .map((order) => `<button type="button" class="order-btn" data-order="${escapeHtml(order.id)}" title="${escapeHtml(order.hint)}">${escapeHtml(order.label)}</button>`).join('');
     const optionsHtml = script.options
-      .map((option) => `<button type="button" class="scene-option" data-option="${escapeHtml(option.id)}">${escapeHtml(option.label)}</button>`)
-      .join('');
+      .map((option) => `<button type="button" class="scene-option" data-option="${escapeHtml(option.id)}">${escapeHtml(option.label)}</button>`).join('');
+    const chips = units.map((unit) => `<span class="scene-unit-chip">${escapeHtml(unit.id)} · ${escapeHtml(unit.type)}</span>`).join('');
+    const lastOrders = (scene.orders || []).slice(-3).map((o) => `${escapeHtml(o.label)} → ${o.tension}%`).join(' · ');
     dom.sceneOverlay.hidden = false;
     dom.sceneOverlay.innerHTML = `<div class="overlay-card scene-card">
-      <div class="eyebrow">${escapeHtml(call.id)} · ${escapeHtml(call.location)}</div>
+      <div class="eyebrow">${escapeHtml(call.id)} · ${escapeHtml(call.place || call.location)}</div>
       <h2>${escapeHtml(script.title)}</h2>
-      <div class="scene-units">${(Array.isArray(call.assignedTo) ? call.assignedTo : [call.assignedTo]).map((id) => `<span class="scene-unit-chip">${escapeHtml(id)}</span>`).join('')}</div>
+      ${sceneStageHtml(call, units, mood, scene.lastOrder)}
+      ${tensionBarHtml(scene.tension)}
+      <div class="scene-units">${chips}</div>
       <p class="scene-intro">${escapeHtml(intro)}</p>
+      <div class="eyebrow">Órdenes a los grupos</div>
+      <div class="order-row">${orderButtons}</div>
+      <p class="scene-history">${lastOrders || 'Aún no has dado órdenes.'}</p>
+      <div class="eyebrow">Cerrar la intervención</div>
       <div class="scene-options">${optionsHtml}</div>
     </div>`;
+    dom.sceneOverlay.querySelectorAll('[data-order]').forEach((button) => {
+      button.addEventListener('click', () => handlers.onSceneOrder(call.id, button.dataset.order));
+    });
     dom.sceneOverlay.querySelectorAll('[data-option]').forEach((button) => {
       button.addEventListener('click', () => handlers.onSceneChoice(call.id, button.dataset.option));
     });
   }
 
-  function showSceneResult({ callId, title, text, trustDelta, failed }, onContinue) {
+  function showSceneResult({ callId, title, text, trustDelta, failed, chain }, onContinue) {
     const sign = trustDelta > 0 ? '+' : '';
+    const resultStage = lastSceneCall ? sceneStageHtml(lastSceneCall, lastSceneUnits, failed ? 'violent' : 'calm', failed ? null : 'linea') : '';
+    const chainHtml = chain ? `<p class="scene-chain">⚠ Se extiende: nuevo aviso ${escapeHtml(chain.id)} en ${escapeHtml(chain.place)}.</p>` : '';
     dom.sceneOverlay.hidden = false;
     dom.sceneOverlay.innerHTML = `<div class="overlay-card scene-card">
       <div class="eyebrow">${escapeHtml(callId)} · ${failed ? 'complicación' : 'resultado'}</div>
       <h2>${escapeHtml(title)}</h2>
+      ${resultStage}
       <p class="scene-intro">${escapeHtml(text)}</p>
       <p class="scene-trust ${trustDelta >= 0 ? 'good' : 'warn'}">Confianza vecinal: ${sign}${trustDelta}%</p>
+      ${chainHtml}
       <div class="scene-options"><button type="button" class="primary" id="scene-continue">Continuar</button></div>
     </div>`;
     document.getElementById('scene-continue').addEventListener('click', onContinue);
@@ -415,7 +476,7 @@
     cacheDom, initMap, getMap, zoomIn, zoomOut,
     renderAll, updatePositions, renderClockOnly, renderObjective, renderSpeedControls,
     renderStartOverlay, renderBriefing, showMenuStep,
-    showSceneResult, notify, renderDispatchPanel, hideDispatchPanel
+    showSceneResult, notify, renderDispatchPanel, hideDispatchPanel, renderSceneOverlay
   };
 
   if (typeof module !== 'undefined' && module.exports) {
