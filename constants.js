@@ -73,6 +73,37 @@
     { label: 'P', name: 'Parque Norte', type: 'green', x: 36, y: 18 }
   ];
 
+  // Turnos jugables, elegidos en la pantalla de inicio.
+  const scenarios = {
+    normal: {
+      label: 'Día normal',
+      description: 'Carga normal de avisos. Resuelve suficientes antes de que acabe el turno sin perder el control.',
+      shiftMinutes: 180,
+      targetServed: 7,
+      spawnMultiplier: 1,
+      severityBoost: 1,
+      failOnZeroTrust: true
+    },
+    disturbios: {
+      label: 'Disturbios',
+      description: 'Manifestación activa y avisos graves sin parar. Aguanta todo el turno sin que la confianza caiga a 0.',
+      shiftMinutes: 120,
+      targetServed: 5,
+      spawnMultiplier: 1.7,
+      severityBoost: 1.6,
+      failOnZeroTrust: true
+    },
+    libre: {
+      label: 'Turno libre',
+      description: 'Sin objetivo ni límite de tiempo. Practica a tu ritmo; la confianza a 0 no acaba la partida.',
+      shiftMinutes: null,
+      targetServed: 0,
+      spawnMultiplier: 1,
+      severityBoost: 1,
+      failOnZeroTrust: false
+    }
+  };
+
   const crowdPositions = [
     [18, 30], [31, 16], [47, 22], [63, 18], [79, 32],
     [12, 49], [27, 44], [42, 48], [58, 42], [74, 52],
@@ -87,6 +118,7 @@
     BASE_GAME_MINUTES_PER_SECOND,
     speedOptions,
     difficultyConfig,
+    scenarios,
     approachConfig,
     decisionOutcomes,
     callTemplates,

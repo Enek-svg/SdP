@@ -13,13 +13,24 @@
     return Object.fromEntries(C.districtNames.map((name) => [name, 0]));
   }
 
-  function createState() {
+  function createState(scenarioKey) {
+    const key = C.scenarios[scenarioKey] ? scenarioKey : 'libre';
+    const scenario = C.scenarios[key];
+    const startClock = 8 * 60 + 42;
     return {
+      scenarioKey: key,
+      shiftMinutes: scenario.shiftMinutes,
+      targetServed: scenario.targetServed,
+      spawnMultiplier: scenario.spawnMultiplier,
+      severityBoost: scenario.severityBoost,
+      failOnZeroTrust: scenario.failOnZeroTrust,
+      startClock,
+      gameOver: null,
       calls: cloneData(C.baseCalls),
       units: cloneData(C.baseUnits),
       selectedCall: null,
       selectedUnit: null,
-      clockMinutes: 8 * 60 + 42,
+      clockMinutes: startClock,
       served: 0,
       trust: 78,
       responseTotal: 0,
@@ -32,8 +43,8 @@
       speed: 3,
       paused: false,
       soundOn: true,
-      logEntries: [{ time: timeString(8 * 60 + 42), text: 'Turno iniciado. Cuatro unidades disponibles.' }],
-      spawnTimer: randomBetween(C.difficultyConfig.media.spawnMin, C.difficultyConfig.media.spawnMax),
+      logEntries: [{ time: timeString(startClock), text: 'Turno iniciado. Cuatro unidades disponibles.' }],
+      spawnTimer: randomBetween(C.difficultyConfig.media.spawnMin, C.difficultyConfig.media.spawnMax) / scenario.spawnMultiplier,
       trustCheckAcc: 0
     };
   }
@@ -93,6 +104,7 @@
   }
 
   function generateRandomCall(state, { silent = false } = {}) {
+    if (state.gameOver) return { ok: false, reason: 'game_over' };
     if (pendingCount(state) >= 7) {
       return { ok: false, reason: 'queue_full' };
     }
@@ -102,7 +114,8 @@
       id = `AV-${String(220 + Math.floor(Math.random() * 60)).padStart(3, '0')}`;
     }
     const difficultyFactor = C.difficultyConfig[state.difficulty].callFactor;
-    const severityBias = Math.random() < 0.4 * difficultyFactor ? 'high' : template.level;
+    const boost = numberOr(state.severityBoost, 1);
+    const severityBias = Math.random() < 0.4 * difficultyFactor * boost ? 'high' : template.level;
     const call = {
       id,
       title: template.title,
@@ -123,6 +136,7 @@
   }
 
   function dispatchUnit(state, callId, unitId, approachKey) {
+    if (state.gameOver) return { ok: false };
     const call = state.calls.find((item) => item.id === callId);
     const unit = state.units.find((item) => item.id === unitId);
     if (!call || !unit || call.status !== 'pending' || unit.status !== 'free') {
@@ -147,6 +161,7 @@
   }
 
   function resolveDecision(state, callId, choice) {
+    if (state.gameOver) return { ok: false };
     const call = state.calls.find((item) => item.id === callId);
     if (!call || call.status !== 'awaiting_decision') return { ok: false };
     const unit = state.units.find((item) => item.id === call.assignedTo);
@@ -173,6 +188,7 @@
   }
 
   function startPatrol(state, unitId, x, y) {
+    if (state.gameOver) return { ok: false };
     const unit = state.units.find((item) => item.id === unitId);
     if (!unit || unit.status !== 'free') return { ok: false };
     unit.patrolTarget = { x: clamp(x, 2, 98), y: clamp(y, 2, 98) };
@@ -184,7 +200,7 @@
   // refresco completo o solo mover los pines.
   function tick(state, deltaMinutes) {
     const events = [];
-    if (deltaMinutes <= 0) return events;
+    if (state.gameOver || deltaMinutes <= 0) return events;
     state.clockMinutes += deltaMinutes;
     state.gameTicks += deltaMinutes;
 
@@ -227,7 +243,8 @@
     state.spawnTimer -= deltaMinutes;
     if (state.spawnTimer <= 0) {
       const config = C.difficultyConfig[state.difficulty];
-      state.spawnTimer = randomBetween(config.spawnMin, config.spawnMax);
+      const multiplier = numberOr(state.spawnMultiplier, 1);
+      state.spawnTimer = randomBetween(config.spawnMin, config.spawnMax) / multiplier;
       const result = generateRandomCall(state);
       if (result.ok) events.push({ type: 'spawn', callId: result.call.id });
     }
@@ -241,6 +258,19 @@
       }
     }
 
+    if (state.failOnZeroTrust && state.trust <= 0) {
+      state.gameOver = { won: false, reason: 'confianza' };
+      state.paused = true;
+      addLog(state, 'La confianza vecinal se ha derrumbado. Turno fallido.');
+      events.push({ type: 'gameover', won: false });
+    } else if (state.shiftMinutes != null && state.clockMinutes - state.startClock >= state.shiftMinutes) {
+      const won = state.served >= state.targetServed;
+      state.gameOver = { won, reason: 'tiempo' };
+      state.paused = true;
+      addLog(state, won ? 'Fin del turno: objetivo cumplido.' : 'Fin del turno: objetivo no alcanzado.');
+      events.push({ type: 'gameover', won });
+    }
+
     updateScore(state);
     return events;
   }
@@ -251,8 +281,8 @@
     updateScore(state);
   }
 
-  function resetTurn(state) {
-    const fresh = createState();
+  function resetTurn(state, scenarioKey) {
+    const fresh = createState(scenarioKey || state.scenarioKey);
     Object.assign(state, fresh);
   }
 
@@ -272,7 +302,9 @@
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       if (!parsed || !Array.isArray(parsed.calls) || !Array.isArray(parsed.units)) return null;
-      const state = createState();
+      const state = createState(parsed.scenarioKey);
+      state.gameOver = parsed.gameOver && typeof parsed.gameOver === 'object' ? parsed.gameOver : null;
+      state.startClock = numberOr(parsed.startClock, state.startClock);
       state.calls = parsed.calls;
       state.units = parsed.units;
       // Asegura que no falte la manifestación si se perdió por algún motivo.

@@ -26,9 +26,11 @@
         <button type="button" class="mini-btn" id="pause-toggle" aria-pressed="false">Pausa</button>
         <button type="button" class="mini-btn" id="sound-toggle" aria-pressed="false">🔊 Sonido</button>
         <button type="button" class="mini-btn save-btn" id="save-session">Guardar</button>
+        <button type="button" class="mini-btn" id="menu-btn">Menú</button>
       </div>
     </header>
 
+    <div class="objective-banner" id="objective-banner" hidden aria-live="polite"></div>
     <div class="attention-banner" id="attention-banner" hidden aria-live="polite"></div>
 
     <main class="layout">
@@ -178,6 +180,38 @@
     </main>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <div class="overlay" id="start-overlay" hidden>
+    <div class="overlay-card">
+      <div class="eyebrow">Distrito · Sala de coordinación</div>
+      <h2>Elige el turno</h2>
+      <div class="scenario-grid">
+        <button type="button" class="scenario-card" data-scenario="normal">
+          <h3>Día normal</h3>
+          <p>Carga normal de avisos. Resuelve 7 antes de que acabe el turno (3h de juego) sin perder el control.</p>
+        </button>
+        <button type="button" class="scenario-card" data-scenario="disturbios">
+          <h3>Disturbios</h3>
+          <p>Manifestación activa y avisos graves sin parar. Aguanta 2h de turno sin que la confianza llegue a 0.</p>
+        </button>
+        <button type="button" class="scenario-card" data-scenario="libre">
+          <h3>Turno libre</h3>
+          <p>Sin objetivo ni límite de tiempo. Juega a tu ritmo, sin derrota por confianza.</p>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="end-overlay" hidden>
+    <div class="overlay-card end-card">
+      <h2 class="end-title" id="end-title">Turno terminado</h2>
+      <div id="end-stats"></div>
+      <div class="end-actions">
+        <button type="button" class="primary" id="retry-btn">Reintentar</button>
+        <button type="button" class="mini-btn" id="end-menu-btn">Elegir otro turno</button>
+      </div>
+    </div>
+  </div>
 
   <script src="utils.js" defer></script>
   <script src="constants.js" defer></script>

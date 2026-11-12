@@ -39,6 +39,12 @@
     dom.soundBtn = document.getElementById('sound-toggle');
     dom.speedButtons = Array.from(document.querySelectorAll('[data-speed]'));
     dom.patrolHint = document.getElementById('patrol-hint');
+    dom.objectiveBanner = document.getElementById('objective-banner');
+    dom.startOverlay = document.getElementById('start-overlay');
+    dom.endOverlay = document.getElementById('end-overlay');
+    dom.endTitle = document.getElementById('end-title');
+    dom.endStats = document.getElementById('end-stats');
+    dom.menuBtn = document.getElementById('menu-btn');
   }
 
   function notify(message) {
@@ -288,6 +294,43 @@
     dom.clock.textContent = timeString(state.clockMinutes);
   }
 
+  function renderObjective(state) {
+    if (!dom.objectiveBanner) return;
+    if (state.scenarioKey === 'libre' || state.shiftMinutes == null) {
+      dom.objectiveBanner.hidden = true;
+      return;
+    }
+    dom.objectiveBanner.hidden = false;
+    const elapsed = state.clockMinutes - state.startClock;
+    const remaining = Math.max(0, Math.round(state.shiftMinutes - elapsed));
+    const label = C.scenarios[state.scenarioKey] ? C.scenarios[state.scenarioKey].label : 'Turno';
+    dom.objectiveBanner.innerHTML = `<strong>${escapeHtml(label)}</strong> · Objetivo: ${state.served}/${state.targetServed} avisos resueltos · quedan ${remaining} min`;
+  }
+
+  function renderEndScreen(state) {
+    if (!state.gameOver) {
+      dom.endOverlay.hidden = true;
+      return;
+    }
+    dom.endOverlay.hidden = false;
+    dom.endTitle.textContent = state.gameOver.won ? '✅ Turno superado' : '❌ Turno fallido';
+    dom.endTitle.className = state.gameOver.won ? 'end-title won' : 'end-title lost';
+    const reasonText = state.gameOver.reason === 'confianza'
+      ? 'La confianza vecinal llegó a 0.'
+      : state.gameOver.won
+        ? 'Cumpliste el objetivo antes de que acabara el turno.'
+        : 'Se acabó el turno sin cumplir el objetivo.';
+    dom.endStats.innerHTML = `<p>${escapeHtml(reasonText)}</p><div class="end-stat-grid">
+      <div><span>Avisos atendidos</span><strong>${state.served}</strong></div>
+      <div><span>Confianza final</span><strong>${Math.round(state.trust)}%</strong></div>
+      <div><span>Puntuación</span><strong>${Math.round(state.score)}</strong></div>
+    </div>`;
+  }
+
+  function renderStartOverlay(visible) {
+    dom.startOverlay.hidden = !visible;
+  }
+
   function renderDifficultyBox(state) {
     const config = C.difficultyConfig[state.difficulty];
     dom.difficultyLabel.textContent = config.label;
@@ -311,9 +354,11 @@
     renderDifficultyBox(state);
     renderFilters(state);
     renderSpeedControls(state);
+    renderObjective(state);
+    renderEndScreen(state);
   }
 
-  const api = { cacheDom, renderAll, updatePositions, renderClockOnly, notify, renderSpeedControls };
+  const api = { cacheDom, renderAll, updatePositions, renderClockOnly, notify, renderSpeedControls, renderObjective, renderEndScreen, renderStartOverlay };
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;

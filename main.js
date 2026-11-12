@@ -7,10 +7,35 @@
   const Engine = window.Engine;
   const Render = window.Render;
 
-  let state = Engine.restoreState() || Engine.createState();
+  const restored = Engine.restoreState();
+  let state = restored || Engine.createState('libre');
+  let menuOpen = !restored; // reabre el menú solo si no había sesión guardada
   let audioCtx = null;
 
   Render.cacheDom();
+
+  function startScenario(scenarioKey) {
+    state = Engine.createState(scenarioKey);
+    menuOpen = false;
+    Render.renderStartOverlay(false);
+    refreshAll();
+  }
+
+  function goToMenu() {
+    menuOpen = true;
+    Render.renderStartOverlay(true);
+  }
+
+  document.querySelectorAll('[data-scenario]').forEach((button) => {
+    button.addEventListener('click', () => startScenario(button.dataset.scenario));
+  });
+  document.getElementById('menu-btn').addEventListener('click', goToMenu);
+  document.getElementById('retry-btn').addEventListener('click', () => {
+    startScenario(state.scenarioKey);
+  });
+  document.getElementById('end-menu-btn').addEventListener('click', goToMenu);
+
+  Render.renderStartOverlay(menuOpen);
 
   // --- sonido (beeps simples con WebAudio, sin ficheros de audio) ---
   function ensureAudio() {
@@ -66,7 +91,7 @@
 
   function refreshAll() {
     Render.renderAll(state, handlers);
-    Engine.saveState(state);
+    if (!menuOpen) Engine.saveState(state);
   }
 
   // --- clic en el mapa: despachar unidad a un aviso, o mandarla de patrulla libre ---
@@ -97,7 +122,7 @@
   });
 
   document.getElementById('reset-turn').addEventListener('click', () => {
-    Engine.resetTurn(state);
+    Engine.resetTurn(state, state.scenarioKey);
     refreshAll();
   });
 
@@ -175,6 +200,8 @@
         beep(740, 160);
       } else if (event.type === 'spawn') {
         beep(520, 120);
+      } else if (event.type === 'gameover') {
+        beep(event.won ? 920 : 220, event.won ? 260 : 400);
       }
     });
   }
@@ -187,7 +214,7 @@
     const deltaRealSeconds = Math.min((timestamp - lastTimestamp) / 1000, 0.25);
     lastTimestamp = timestamp;
 
-    if (!state.paused) {
+    if (!state.paused && !menuOpen) {
       const deltaGameMinutes = deltaRealSeconds * C.BASE_GAME_MINUTES_PER_SECOND * state.speed;
       const events = Engine.tick(state, deltaGameMinutes);
       if (events.length) {
@@ -196,6 +223,7 @@
       } else {
         Render.updatePositions(state);
         Render.renderClockOnly(state);
+        Render.renderObjective(state);
       }
     }
     window.requestAnimationFrame(loop);
@@ -204,10 +232,10 @@
   window.requestAnimationFrame(loop);
 
   // Autoguardado periódico (además de guardar en cada evento discreto).
-  window.setInterval(() => Engine.saveState(state), 4000);
-  window.addEventListener('beforeunload', () => Engine.saveState(state));
+  window.setInterval(() => { if (!menuOpen) Engine.saveState(state); }, 4000);
+  window.addEventListener('beforeunload', () => { if (!menuOpen) Engine.saveState(state); });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') Engine.saveState(state);
+    if (document.visibilityState === 'hidden' && !menuOpen) Engine.saveState(state);
   });
 
   refreshAll();
