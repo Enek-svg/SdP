@@ -47,6 +47,9 @@
     .eyebrow { color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.15px; }
     h1, h2, h3, p { margin: 0; }
     h2 { font: 600 18px var(--display); text-transform: uppercase; letter-spacing: .3px; }
+    .head-actions { display: flex; align-items: center; gap: 6px; }
+    .mini-btn { height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: 3px; background: #1d2a25; color: var(--text); font: 700 10px var(--font); text-transform: uppercase; letter-spacing: .6px; cursor: pointer; }
+    .mini-btn:hover { border-color: var(--lime); color: var(--lime); }
     .count { min-width: 23px; height: 23px; display: grid; place-items: center; border: 1px solid #536447; border-radius: 50%; color: var(--lime); font-size: 11px; }
     .queue-list { padding: 10px; display: grid; gap: 8px; }
     .call { display: block; width: 100%; text-align: left; color: var(--text); border: 1px solid var(--line); border-left: 3px solid var(--cyan); border-radius: 3px; background: var(--panel); padding: 11px 11px 10px; cursor: pointer; transition: background .16s, border-color .16s, transform .16s; }
@@ -180,7 +183,14 @@
 
     <main class="layout">
       <section class="column left" aria-label="Avisos pendientes">
-        <div class="column-head"><div><div class="eyebrow">Centralita</div><h2>Avisos</h2></div><span class="count" id="call-count">4</span></div>
+        <div class="column-head">
+          <div><div class="eyebrow">Centralita</div><h2>Avisos</h2></div>
+          <div class="head-actions">
+            <button type="button" class="mini-btn" id="new-call">Nuevo aviso</button>
+            <button type="button" class="mini-btn" id="reset-turn">Reset</button>
+          </div>
+          <span class="count" id="call-count">4</span>
+        </div>
         <div class="queue-list" id="queue"></div>
       </section>
 
@@ -229,18 +239,30 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script>
-    const calls = [
+    const callTemplates = [
+      { title: 'Ruidosos en local cerrado', location: 'Centro', severity: 'media', level: 'medium', x: 36, y: 56, kind: 'N' },
+      { title: 'Persona en situación de riesgo', location: 'San Miguel', severity: 'alta', level: 'high', x: 18, y: 30, kind: 'A' },
+      { title: 'Colisión menor en vía secundaria', location: 'Ribera', severity: 'media', level: 'medium', x: 70, y: 72, kind: 'T' },
+      { title: 'Falta de asistencia vecinal', location: 'La Estación', severity: 'prioridad baja', level: 'low', x: 68, y: 22, kind: 'V' },
+      { title: 'Varios disturbios en calle', location: 'Centro', severity: 'alta', level: 'high', x: 54, y: 40, kind: 'D' },
+      { title: 'Intervención no urgente', location: 'San Miguel', severity: 'prioridad baja', level: 'low', x: 26, y: 62, kind: 'I' },
+      { title: 'Auxilio en estación de buses', location: 'La Estación', severity: 'media', level: 'medium', x: 78, y: 44, kind: 'A' },
+      { title: 'Peatones bloqueando tráfico', location: 'Ribera', severity: 'prioridad baja', level: 'low', x: 59, y: 76, kind: 'T' }
+    ];
+    const baseCalls = [
       { id: 'AV-204', title: 'Incidencia vecinal · Plaza Mayor', location: 'Centro', severity: 'media', level: 'medium', x: 32, y: 62, kind: 'V', status: 'pending', minutes: 0 },
       { id: 'AV-203', title: 'Apoyo a persona mayor', location: 'San Miguel', severity: 'prioridad baja', level: 'low', x: 22, y: 31, kind: 'A', status: 'pending', minutes: 0 },
       { id: 'AV-202', title: 'Congestión · Puente de Ribera', location: 'Ribera', severity: 'media', level: 'medium', x: 72, y: 72, kind: 'T', status: 'pending', minutes: 0 },
       { id: 'AV-201', title: 'Aviso de ruido · Estación', location: 'La Estación', severity: 'prioridad baja', level: 'low', x: 70, y: 30, kind: 'N', status: 'pending', minutes: 0 }
     ];
-    const units = [
+    const baseUnits = [
       { id: 'UIP-01', type: 'Intervención · UIP', location: 'Base Centro', status: 'free', x: 49, y: 48, color: 'lime', progress: 85 },
       { id: 'UIP-02', type: 'Intervención · UIP', location: 'Base Norte', status: 'free', x: 42, y: 22, color: 'lime', progress: 68 },
       { id: 'P-14', type: 'Patrulla de proximidad', location: 'Base Ribera', status: 'free', x: 81, y: 58, color: 'cyan', progress: 92 },
       { id: 'P-08', type: 'Patrulla de proximidad', location: 'Base Estación', status: 'free', x: 57, y: 78, color: 'cyan', progress: 74 }
     ];
+    let calls = JSON.parse(JSON.stringify(baseCalls));
+    let units = JSON.parse(JSON.stringify(baseUnits));
     let selectedCall = null;
     let selectedUnit = null;
     let clockMinutes = 8 * 60 + 42;
@@ -256,6 +278,44 @@
       const hours = Math.floor(total / 60) % 24;
       const minutes = total % 60;
       return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    }
+
+    function resetTurn() {
+      calls = JSON.parse(JSON.stringify(baseCalls));
+      units = JSON.parse(JSON.stringify(baseUnits));
+      selectedCall = null;
+      selectedUnit = null;
+      clockMinutes = 8 * 60 + 42;
+      served = 0;
+      trust = 78;
+      responseTotal = 0;
+      document.getElementById('clock').textContent = timeString();
+      addLog('Turno reiniciado. Todas las unidades y los avisos vuelven a la línea inicial.');
+      renderAll();
+    }
+
+    function generateRandomCall() {
+      if (calls.filter((call) => call.status === 'pending').length >= 7) {
+        notify('Hay demasiados avisos pendientes. Revisa la cola antes de añadir más.');
+        return;
+      }
+      const template = callTemplates[Math.floor(Math.random() * callTemplates.length)];
+      const id = `AV-${String(220 + Math.floor(Math.random() * 60)).padStart(3, '0')}`;
+      calls.push({
+        id,
+        title: template.title,
+        location: template.location,
+        severity: template.severity,
+        level: template.level,
+        x: template.x,
+        y: template.y,
+        kind: template.kind,
+        status: 'pending',
+        minutes: 0
+      });
+      addLog(`Nuevo aviso ${id} recibido en ${template.location}.`);
+      notify(`Aviso ${id} registrado en ${template.location}.`);
+      renderAll();
     }
 
     function renderCalls() {
@@ -364,6 +424,9 @@
       window.clearTimeout(notify.timeout);
       notify.timeout = window.setTimeout(() => toast.classList.remove('show'), 2200);
     }
+
+    document.getElementById('new-call').addEventListener('click', generateRandomCall);
+    document.getElementById('reset-turn').addEventListener('click', resetTurn);
 
     document.getElementById('dispatch').addEventListener('click', () => {
       const call = calls.find((item) => item.id === selectedCall);
