@@ -50,8 +50,10 @@
   function initMap() {
     leafletMap = L.map('map-canvas', { zoomControl: false, attributionControl: true })
       .setView([(C.mapBounds.north + C.mapBounds.south) / 2, (C.mapBounds.east + C.mapBounds.west) / 2], C.mapZoom);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; OpenStreetMap, &copy; CARTO',
+    // OpenStreetMap estándar (sin API key); se oscurece con un filtro CSS en .leaflet-tile-pane
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      subdomains: 'abc',
       maxZoom: 19
     }).addTo(leafletMap);
     C.mapPoints.forEach((point) => {

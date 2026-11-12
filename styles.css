@@ -68,6 +68,7 @@ h2 { font: 600 18px var(--display); text-transform: uppercase; letter-spacing: .
 .map { width: 100%; min-height: 360px; position: relative; overflow: hidden; background: #0d1210; }
 #map-canvas { position: absolute; inset: 0; z-index: 0; background: #0d1210; }
 .leaflet-container { background: #0d1210; font: inherit; }
+.leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.7); }
 .leaflet-control-attribution { background: rgba(20,28,25,.78) !important; color: var(--muted) !important; font-size: 9px !important; }
 .leaflet-control-attribution a { color: var(--lime) !important; }
 
