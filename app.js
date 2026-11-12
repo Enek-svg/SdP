@@ -6,13 +6,15 @@
       { title: 'Varios disturbios en calle', location: 'Centro', severity: 'alta', level: 'high', x: 54, y: 40, kind: 'D' },
       { title: 'Intervención no urgente', location: 'San Miguel', severity: 'prioridad baja', level: 'low', x: 26, y: 62, kind: 'I' },
       { title: 'Auxilio en estación de buses', location: 'La Estación', severity: 'media', level: 'medium', x: 78, y: 44, kind: 'A' },
-      { title: 'Peatones bloqueando tráfico', location: 'Ribera', severity: 'prioridad baja', level: 'low', x: 59, y: 76, kind: 'T' }
+      { title: 'Peatones bloqueando tráfico', location: 'Ribera', severity: 'prioridad baja', level: 'low', x: 59, y: 76, kind: 'T' },
+      { title: 'Manifestación vecinal · Plaza Mayor', location: 'Centro', severity: 'alta', level: 'high', x: 44, y: 49, kind: 'M', crowd: true }
     ];
     const baseCalls = [
       { id: 'AV-204', title: 'Incidencia vecinal · Plaza Mayor', location: 'Centro', severity: 'media', level: 'medium', x: 32, y: 62, kind: 'V', status: 'pending', minutes: 0 },
       { id: 'AV-203', title: 'Apoyo a persona mayor', location: 'San Miguel', severity: 'prioridad baja', level: 'low', x: 22, y: 31, kind: 'A', status: 'pending', minutes: 0 },
       { id: 'AV-202', title: 'Congestión · Puente de Ribera', location: 'Ribera', severity: 'media', level: 'medium', x: 72, y: 72, kind: 'T', status: 'pending', minutes: 0 },
-      { id: 'AV-201', title: 'Aviso de ruido · Estación', location: 'La Estación', severity: 'prioridad baja', level: 'low', x: 70, y: 30, kind: 'N', status: 'pending', minutes: 0 }
+      { id: 'AV-201', title: 'Aviso de ruido · Estación', location: 'La Estación', severity: 'prioridad baja', level: 'low', x: 70, y: 30, kind: 'N', status: 'pending', minutes: 0 },
+      { id: 'AV-205', title: 'Manifestación vecinal · Plaza Mayor', location: 'Centro', severity: 'alta', level: 'high', x: 40, y: 51, kind: 'M', crowd: true, status: 'pending', minutes: 0 }
     ];
     const baseUnits = [
       { id: 'UIP-01', type: 'Intervención · UIP', location: 'Base Centro', status: 'free', x: 49, y: 48, color: 'lime', progress: 85 },
@@ -55,8 +57,9 @@
     let filterState = { district: 'all', priority: 'all' };
     const queue = document.getElementById('queue');
     const unitList = document.getElementById('units');
-    const map = document.getElementById('map');
     const mapWorld = document.getElementById('map-world');
+    const routeLayer = document.getElementById('route-layer');
+    const pendingUnitMoves = new Map();
 
     function getPriorityValue(level) {
       return severityRank[level] || 0;
@@ -108,6 +111,19 @@
         if (!parsed || !Array.isArray(parsed.calls) || !Array.isArray(parsed.units)) return false;
         calls = parsed.calls;
         units = parsed.units;
+        if (!calls.some((call) => call.crowd)) {
+          const demonstration = baseCalls.find((call) => call.crowd);
+          const pendingCount = calls.filter((call) => call.status === 'pending').length;
+          if (demonstration && pendingCount < 7 && !calls.some((call) => call.id === demonstration.id)) {
+            calls.push(JSON.parse(JSON.stringify(demonstration)));
+          }
+        }
+        calls.filter((call) => call.status === 'assigned').forEach((call) => {
+          const unit = units.find((item) => item.id === call.assignedTo);
+          call.routeStartX = Number.isFinite(call.routeStartX) ? call.routeStartX : unit ? unit.x : call.x;
+          call.routeStartY = Number.isFinite(call.routeStartY) ? call.routeStartY : unit ? unit.y : call.y;
+          call.travelMinutes = Math.max(5, Number(call.travelMinutes) || 10);
+        });
         selectedCall = parsed.selectedCall || null;
         selectedUnit = parsed.selectedUnit || null;
         clockMinutes = Number(parsed.clockMinutes) || 8 * 60 + 42;
@@ -198,7 +214,7 @@
       renderAll();
     }
 
-    function generateRandomCall() {
+    function generateRandomCall(shouldRender = true) {
       if (calls.filter((call) => call.status === 'pending').length >= 7) {
         notify('Hay demasiados avisos pendientes. Revisa la cola antes de añadir más.');
         return;
@@ -219,6 +235,7 @@
         x: template.x,
         y: template.y,
         kind: template.kind,
+        crowd: Boolean(template.crowd),
         status: 'pending',
         minutes: 0
       };
@@ -227,7 +244,7 @@
       sortQueue();
       addLog(`Nuevo aviso ${id} recibido en ${call.location}.`);
       notify(`Aviso ${id} registrado en ${call.location}.`);
-      renderAll();
+      if (shouldRender) renderAll();
     }
 
     function renderCalls() {
@@ -269,8 +286,78 @@
       document.getElementById('unit-count').textContent = units.filter((unit) => unit.status === 'free').length;
     }
 
+    function routePositionAt(call, progress) {
+      const startX = call.routeStartX;
+      const startY = call.routeStartY;
+      const horizontalDistance = Math.abs(call.x - startX);
+      const verticalDistance = Math.abs(call.y - startY);
+      const distance = horizontalDistance + verticalDistance;
+      if (distance === 0) return { x: call.x, y: call.y };
+      const traveled = distance * progress;
+      if (traveled <= horizontalDistance) {
+        const direction = Math.sign(call.x - startX);
+        return { x: startX + direction * traveled, y: startY };
+      }
+      const direction = Math.sign(call.y - startY);
+      return { x: call.x, y: startY + direction * Math.min(verticalDistance, traveled - horizontalDistance) };
+    }
+
+    function renderRoutes() {
+      routeLayer.replaceChildren();
+      calls.filter((call) => call.status === 'assigned').forEach((call) => {
+        const unit = units.find((item) => item.id === call.assignedTo);
+        if (!unit) return;
+        const startX = call.routeStartX * 10;
+        const startY = call.routeStartY * 6;
+        const cornerX = call.x * 10;
+        const cornerY = startY;
+        const targetX = call.x * 10;
+        const targetY = call.y * 6;
+        const track = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        track.classList.add('route-track');
+        track.setAttribute('d', `M ${startX} ${startY} L ${cornerX} ${cornerY} L ${targetX} ${targetY}`);
+        routeLayer.append(track);
+        const progress = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        progress.classList.add('route-progress');
+        const passedCorner = Math.abs(unit.y - call.routeStartY) > 0.01;
+        const progressPath = passedCorner
+          ? `M ${startX} ${startY} L ${cornerX} ${cornerY} L ${unit.x * 10} ${unit.y * 6}`
+          : `M ${startX} ${startY} L ${unit.x * 10} ${unit.y * 6}`;
+        progress.setAttribute('d', progressPath);
+        routeLayer.append(progress);
+      });
+    }
+
+    const crowdPositions = [
+      [18, 30], [31, 16], [47, 22], [63, 18], [79, 32],
+      [12, 49], [27, 44], [42, 48], [58, 42], [74, 52],
+      [20, 67], [36, 76], [52, 68], [68, 77], [84, 67],
+      [33, 59], [61, 58], [49, 31]
+    ];
+
+    function renderCrowd(call) {
+      const group = document.createElement('div');
+      group.className = 'crowd-group';
+      group.style.left = `${call.x}%`;
+      group.style.top = `${call.y}%`;
+      group.setAttribute('aria-hidden', 'true');
+      crowdPositions.forEach((position, index) => {
+        const person = document.createElement('span');
+        person.className = 'crowd-person';
+        person.style.left = `${position[0]}%`;
+        person.style.top = `${position[1]}%`;
+        person.style.setProperty('--drift-x', `${((index % 5) - 2) * 2.5}px`);
+        person.style.setProperty('--drift-y', `${((index % 4) - 1.5) * 2.5}px`);
+        person.style.setProperty('--pace', `${2.1 + (index % 4) * 0.35}s`);
+        person.style.setProperty('--delay', `${-index * 0.14}s`);
+        group.append(person);
+      });
+      mapWorld.append(group);
+    }
+
     function renderMap() {
-      mapWorld.querySelectorAll('.unit-pin, .incident-pin, .map-poi').forEach((pin) => pin.remove());
+      mapWorld.querySelectorAll('.unit-pin, .incident-pin, .map-poi, .crowd-group').forEach((pin) => pin.remove());
+      renderRoutes();
       mapPoints.forEach((point) => {
         const poi = document.createElement('button');
         poi.type = 'button';
@@ -286,6 +373,7 @@
         mapWorld.append(poi);
       });
       calls.filter((call) => call.status !== 'done').forEach((call) => {
+        if (call.crowd) renderCrowd(call);
         const pin = document.createElement('button');
         pin.type = 'button';
         pin.className = `incident-pin${selectedCall === call.id ? ' selected' : ''}`;
@@ -312,6 +400,14 @@
           if (unit.status === 'free') { selectedUnit = unit.id; renderAll(); }
         });
         mapWorld.append(pin);
+        const movementFrom = pendingUnitMoves.get(unit.id);
+        if (movementFrom && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          pin.animate([
+            { left: `${movementFrom.x}%`, top: `${movementFrom.y}%` },
+            { left: `${unit.x}%`, top: `${unit.y}%` }
+          ], { duration: 900, easing: 'ease-in-out' });
+        }
+        pendingUnitMoves.delete(unit.id);
       });
     }
 
@@ -341,7 +437,12 @@
         decisionPanel.hidden = true;
         decisionPanel.innerHTML = '';
       }
-      document.getElementById('map-tip').textContent = call ? `${call.id} · ${call.location}${unit ? `  /  ${unit.id} seleccionado` : '  /  selecciona una unidad'}` : 'Selecciona un aviso y una unidad para coordinar la respuesta.';
+      const activeCrowd = calls.some((item) => item.crowd && item.status !== 'done');
+      document.getElementById('map-tip').textContent = call
+        ? `${call.id} · ${call.location}${unit ? `  /  ${unit.id} seleccionado` : '  /  selecciona una unidad'}`
+        : activeCrowd
+          ? 'Manifestación activa · personas en movimiento. Avanza el turno para mover las unidades.'
+          : 'Avanza el turno para mover las unidades por sus rutas.';
       document.getElementById('served').textContent = served;
       document.getElementById('trust').textContent = `${trust}%`;
       document.getElementById('trust').className = `metric-value ${trust >= 65 ? 'good' : 'warn'}`;
@@ -436,7 +537,7 @@
       renderAll();
     }
 
-    document.getElementById('new-call').addEventListener('click', generateRandomCall);
+    document.getElementById('new-call').addEventListener('click', () => generateRandomCall());
     document.getElementById('reset-turn').addEventListener('click', resetTurn);
     document.getElementById('save-session').addEventListener('click', () => {
       saveState();
@@ -462,10 +563,12 @@
       call.minutes = 0;
       call.assignedTo = unit.id;
       call.approach = document.getElementById('approach').value;
+      call.routeStartX = unit.x;
+      call.routeStartY = unit.y;
+      const routeDistance = Math.abs(call.x - unit.x) + Math.abs(call.y - unit.y) * 0.6;
+      call.travelMinutes = Math.max(5, Math.min(30, Math.ceil(routeDistance / 18) * 5));
       unit.status = 'busy';
       unit.callId = call.id;
-      unit.x = call.x;
-      unit.y = call.y;
       addLog(`${unit.id} asignada a ${call.id}: ${call.approach}.`);
       notify(`${unit.id} en camino a ${call.location}.`);
       selectedCall = null;
@@ -478,8 +581,16 @@
       gameTicks += 1;
       document.getElementById('clock').textContent = timeString();
       calls.filter((call) => call.status === 'assigned').forEach((call) => {
-        call.minutes += 5;
-        if (call.minutes >= 10) {
+        const travelMinutes = Math.max(5, Number(call.travelMinutes) || 10);
+        call.minutes = Math.min(travelMinutes, call.minutes + 5);
+        const unit = units.find((item) => item.id === call.assignedTo);
+        if (unit) {
+          pendingUnitMoves.set(unit.id, { x: unit.x, y: unit.y });
+          const position = routePositionAt(call, call.minutes / travelMinutes);
+          unit.x = position.x;
+          unit.y = position.y;
+        }
+        if (call.minutes >= travelMinutes) {
           call.status = 'awaiting_decision';
           call.prompt = `La unidad ${call.assignedTo} ya está en ${call.location}. ¿Cómo quieres gestionar el aviso?`;
           addLog(`${call.id}: la unidad ha llegado. Se necesita una decisión.`);
@@ -488,7 +599,7 @@
       });
       const pendingCount = calls.filter((call) => call.status === 'pending').length;
       const spawnChance = difficultyConfig[difficulty].callFactor * (gameTicks % 3 === 0 ? 0.85 : 0.55);
-      if (gameTicks % 6 === 0 && pendingCount < 6 && Math.random() < spawnChance) generateRandomCall();
+      if (gameTicks % 6 === 0 && pendingCount < 6 && Math.random() < spawnChance) generateRandomCall(false);
       if (pendingCount > 4 && trust > 0 && Math.random() < 0.25) {
         trust = Math.max(0, trust - 1);
       }
