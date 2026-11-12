@@ -23,6 +23,7 @@ Este proyecto es una página web de simulación policial tipo sala de mando, don
 - Cola de avisos con prioridad y ubicación
 - Unidades operativas y asignación rápida
 - Mapa operativo con avisos y unidades
+- Mapa vectorial de ciudad con calles con nombre, manzanas, parques, río y zona de atención
 - Registro del turno y alertas visuales
 - Métricas de confianza y avisos atendidos
 

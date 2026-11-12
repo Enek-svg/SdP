@@ -59,22 +59,68 @@
       <section class="column center" aria-label="Mapa y despacho">
         <div class="map-head">
           <div class="map-title"><h2>Mapa operativo</h2><span class="district-tag">Distrito Centro · Sector 04</span></div>
-          <div class="map-legend"><span class="legend-item"><i class="legend-dot"></i>Unidades</span><span class="legend-item"><i class="legend-dot call-dot"></i>Avisos</span></div>
+          <div class="map-legend"><span class="legend-item"><i class="legend-dot"></i>Unidades</span><span class="legend-item"><i class="legend-dot call-dot"></i>Avisos</span><span class="legend-item"><i class="legend-dot risk-dot"></i>Atención</span></div>
         </div>
-        <div class="map" id="map" role="img" aria-label="Mapa esquemático del distrito con unidades policiales y avisos">
-          <div class="water"></div><div class="park one"></div><div class="park two"></div>
-          <div class="road r1"></div><div class="road r2"></div><div class="road r3"></div><div class="road r4"></div><div class="road r5"></div>
-          <div class="zone-zone north"></div>
-          <div class="zone-zone east"></div>
-          <div class="zone-zone west"></div>
-          <div class="zone-zone south"></div>
+        <div class="map" id="map" role="group" aria-label="Mapa operativo esquemático del distrito">
+          <div class="map-world" id="map-world">
+          <svg class="map-art" viewBox="0 0 1000 600" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <pattern id="block-grid" width="100" height="82" patternUnits="userSpaceOnUse">
+                <rect x="7" y="7" width="34" height="25" rx="3" class="building"/>
+                <rect x="48" y="7" width="43" height="25" rx="3" class="building building-alt"/>
+                <rect x="7" y="41" width="49" height="33" rx="3" class="building building-alt"/>
+                <rect x="63" y="41" width="28" height="33" rx="3" class="building"/>
+              </pattern>
+            </defs>
+            <rect width="1000" height="600" class="land"/>
+            <path class="district-fill fill-north" d="M0 0H470V190H0Z"/>
+            <path class="district-fill fill-east" d="M650 0H1000V340H730L650 260Z"/>
+            <path class="district-fill fill-center" d="M260 205H730V455H260Z"/>
+            <path class="district-fill fill-riverside" d="M0 390H420V600H0Z"/>
+            <rect x="0" y="0" width="1000" height="600" fill="url(#block-grid)" opacity=".74"/>
+            <path class="park-shape" d="M75 48h170q24 0 24 24v91q0 18-21 18H90q-19 0-19-20V70q0-22 4-22z"/>
+            <path class="park-path" d="M103 145q58-70 130-47m-113 65q39-49 101-64"/>
+            <path class="park-shape" d="M72 430q8-30 42-31h135q25 4 25 30v105q-3 26-31 26H102q-30-2-30-30z"/>
+            <path class="park-path" d="M100 462q65 54 142 6m-131 39q40-32 99-53"/>
+            <path class="river" d="M902-30C820 91 885 173 797 273S841 433 742 630"/>
+            <path class="river-edge" d="M902-30C820 91 885 173 797 273S841 433 742 630"/>
+            <g class="street major">
+              <path d="M-20 211H1020"/><path d="M-20 397H1020"/>
+              <path d="M293-20V620"/><path d="M642-20V620"/>
+              <path d="M-20 520L740 520"/>
+            </g>
+            <g class="street minor">
+              <path d="M0 103H1000"/><path d="M0 300H1000"/><path d="M0 475H1000"/>
+              <path d="M155-20V620"/><path d="M465-20V620"/><path d="M790-20V620"/>
+              <path d="M-20 570L765-20"/>
+            </g>
+            <g class="street-markings">
+              <path d="M0 211H1000"/><path d="M0 397H1000"/>
+              <path d="M293 0V600"/><path d="M642 0V600"/>
+            </g>
+            <g class="street-labels">
+              <text x="400" y="201">AVENIDA DEL CENTRO</text>
+              <text x="350" y="388">CALLE MAYOR</text>
+              <text x="300" y="293" transform="rotate(-90 300 293)">PASEO DE SAN MIGUEL</text>
+              <text x="650" y="330" transform="rotate(-90 650 330)">AVENIDA DE LA ESTACIÓN</text>
+              <text x="450" y="512">PASEO DE LA RIBERA</text>
+              <text x="110" y="286">C. DEL MERCADO</text>
+              <text x="710" y="112">C. DE LA ESTACIÓN</text>
+            </g>
+            <g class="risk-area">
+              <circle cx="542" cy="316" r="79"/>
+              <circle cx="542" cy="316" r="53"/>
+              <text x="542" y="316">ATENCIÓN</text>
+            </g>
+            <g class="map-compass" transform="translate(944 70)">
+              <path d="M0 26 12 0l12 26-12-7z"/>
+              <text x="12" y="-7">N</text>
+            </g>
+            <text class="map-scale" x="30" y="575">DISTRITO CENTRO · SECTOR 04</text>
+          </svg>
           <span class="district d1">San Miguel</span><span class="district d2">La Estación</span><span class="district d3">Centro</span><span class="district d4">Ribera</span>
           <span class="map-label l1">Parque Norte</span><span class="map-label l2">Paseo del Río</span><span class="map-label l3">Plaza Mayor</span>
-          <div class="map-marker sector hospital" style="left: 25%; top: 12%;">Hospital</div>
-          <div class="map-marker sector station" style="left: 80%; top: 36%;">Estación</div>
-          <div class="map-marker sector police" style="left: 54%; top: 52%;">Comisaría</div>
-          <div class="map-marker sector civic" style="left: 70%; top: 72%;">Mercado</div>
-          <div class="map-marker sector green" style="left: 18%; top: 70%;">Jardín</div>
+          </div>
           <div class="map-tip" id="map-tip">Selecciona un aviso y una unidad para coordinar la respuesta.</div>
           <div class="map-controls"><button type="button" aria-label="Acercar mapa" id="zoom-in">+</button><button type="button" aria-label="Alejar mapa" id="zoom-out">−</button></div>
         </div>

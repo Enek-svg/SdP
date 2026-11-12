@@ -21,15 +21,13 @@
       { id: 'P-08', type: 'Patrulla de proximidad', location: 'Base Estación', status: 'free', x: 57, y: 78, color: 'cyan', progress: 74 }
     ];
     const mapPoints = [
-      { label: 'H', type: 'hospital', x: 25, y: 12 },
-      { label: 'E', type: 'station', x: 80, y: 36 },
-      { label: 'C', type: 'policia', x: 54, y: 52 },
-      { label: 'M', type: 'civic', x: 70, y: 72 },
-      { label: 'J', type: 'green', x: 18, y: 70 },
-      { label: 'Z1', type: 'hospital', x: 34, y: 24 },
-      { label: 'Z2', type: 'station', x: 62, y: 28 },
-      { label: 'Z3', type: 'civic', x: 42, y: 78 },
-      { label: 'Z4', type: 'green', x: 76, y: 62 }
+      { label: 'H', name: 'Hospital del Distrito', type: 'hospital', x: 25, y: 18 },
+      { label: 'E', name: 'Estación Central', type: 'station', x: 82, y: 37 },
+      { label: 'C', name: 'Comisaría Centro', type: 'policia', x: 53, y: 58 },
+      { label: 'M', name: 'Mercado Municipal', type: 'civic', x: 82, y: 75 },
+      { label: 'J', name: 'Jardines de la Ribera', type: 'green', x: 18, y: 76 },
+      { label: 'B', name: 'Biblioteca de San Miguel', type: 'civic', x: 20, y: 38 },
+      { label: 'P', name: 'Parque Norte', type: 'green', x: 36, y: 18 }
     ];
     const STORAGE_KEY = 'sdp-sim-state-v1';
     const severityRank = { high: 3, medium: 2, low: 1 };
@@ -58,6 +56,7 @@
     const queue = document.getElementById('queue');
     const unitList = document.getElementById('units');
     const map = document.getElementById('map');
+    const mapWorld = document.getElementById('map-world');
 
     function getPriorityValue(level) {
       return severityRank[level] || 0;
@@ -271,16 +270,20 @@
     }
 
     function renderMap() {
-      map.querySelectorAll('.unit-pin, .incident-pin, .map-poi').forEach((pin) => pin.remove());
+      mapWorld.querySelectorAll('.unit-pin, .incident-pin, .map-poi').forEach((pin) => pin.remove());
       mapPoints.forEach((point) => {
-        const poi = document.createElement('div');
+        const poi = document.createElement('button');
+        poi.type = 'button';
         poi.className = `map-poi ${point.type}`;
         poi.style.left = `${point.x}%`;
         poi.style.top = `${point.y}%`;
-        poi.title = point.label;
-        poi.setAttribute('aria-label', `Punto de interés ${point.label}`);
+        poi.title = point.name;
+        poi.setAttribute('aria-label', point.name);
         poi.textContent = point.label;
-        map.append(poi);
+        poi.addEventListener('click', () => {
+          document.getElementById('map-tip').textContent = point.name;
+        });
+        mapWorld.append(poi);
       });
       calls.filter((call) => call.status !== 'done').forEach((call) => {
         const pin = document.createElement('button');
@@ -295,7 +298,7 @@
           if (call.status === 'pending') selectedUnit = null;
           renderAll();
         });
-        map.append(pin);
+        mapWorld.append(pin);
       });
       units.forEach((unit) => {
         const pin = document.createElement('button');
@@ -308,7 +311,7 @@
         pin.addEventListener('click', () => {
           if (unit.status === 'free') { selectedUnit = unit.id; renderAll(); }
         });
-        map.append(pin);
+        mapWorld.append(pin);
       });
     }
 
@@ -360,7 +363,7 @@
     function renderAll() {
       updateScore();
       document.getElementById('clock').textContent = timeString();
-      map.style.backgroundSize = `${190 * zoom}px ${160 * zoom}px, ${230 * zoom}px ${190 * zoom}px, ${54 * zoom}px ${54 * zoom}px, ${54 * zoom}px ${54 * zoom}px`;
+      mapWorld.style.transform = `scale(${zoom})`;
       renderCalls();
       renderUnits();
       renderMap();
@@ -497,13 +500,11 @@
 
     document.getElementById('zoom-in').addEventListener('click', () => {
       zoom = Math.min(1.25, zoom + .05);
-      map.style.backgroundSize = `${190 * zoom}px ${160 * zoom}px, ${230 * zoom}px ${190 * zoom}px, ${54 * zoom}px ${54 * zoom}px, ${54 * zoom}px ${54 * zoom}px`;
-      saveState();
+      renderAll();
     });
     document.getElementById('zoom-out').addEventListener('click', () => {
       zoom = Math.max(.8, zoom - .05);
-      map.style.backgroundSize = `${190 * zoom}px ${160 * zoom}px, ${230 * zoom}px ${190 * zoom}px, ${54 * zoom}px ${54 * zoom}px, ${54 * zoom}px ${54 * zoom}px`;
-      saveState();
+      renderAll();
     });
 
     window.addEventListener('beforeunload', saveState);
