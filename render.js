@@ -62,10 +62,12 @@
       </label>
       <div class="row">
         <button class="btn primary" id="new">Empezar carrera</button>
+        <button class="btn" id="boss">Ir directo a Jefe</button>
         ${hasSave ? '<button class="btn" id="continue">Continuar partida guardada</button>' : ''}
       </div>
     </section>`);
     $('#new').addEventListener('click', () => cb.onNew($('#name').value));
+    $('#boss').addEventListener('click', () => cb.onBoss($('#name').value));
     if (hasSave) $('#continue').addEventListener('click', cb.onContinue);
   }
 

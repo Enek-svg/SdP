@@ -18,6 +18,18 @@
       state = Engine.newGame(name);
       hub();
     },
+    onBoss(name) {
+      Engine.clearSave();
+      state = Engine.newGame(name);
+      state.stage = 'jefe';
+      state.rank = 4;
+      state.rep = 75;
+      Object.keys(state.academy.grades).forEach((key) => { state.academy.grades[key] = 7; });
+      state.story.seen = { academia: true, practicas: true, servicio: true };
+      state.history.unshift({ kind: 'good', title: 'Ascenso directo', note: 'Accedes al cargo de Inspector.' });
+      state.jefe = Jefe.newJefe();
+      hub();
+    },
     onContinue() {
       state = Engine.load();
       if (state) hub(); else showStart();
