@@ -2,14 +2,21 @@
 
 Este proyecto es una página web de simulación policial tipo sala de mando, donde puedes seleccionar avisos, asignar unidades y avanzar el turno.
 
+## Archivos
+
+- `index.html`: estructura de la página
+- `styles.css`: estilos y diseño adaptable
+- `app.js`: lógica del simulador, reloj, avisos y decisiones
+
 ## Cómo probarlo
 
 1. Abre el archivo `index.html` directamente en el navegador, o bien sirve la carpeta con:
    `python3 -m http.server 8000`
 2. Entra en `http://localhost:8000`.
 3. Selecciona un aviso pendiente, elige una unidad y asigna la intervención.
-4. Pulsa “Avanzar 5 minutos” para simular la resolución del aviso.
-5. Usa “Nuevo aviso” para añadir más casos al turno.
+4. Avanza el reloj manualmente o inicia el tiempo automático; las unidades llegarán y pedirán una decisión.
+5. Elige cómo responder al aviso para ver el efecto en el turno.
+6. Usa “Nuevo aviso” para añadir más casos al turno.
 
 ## Funcionalidades actuales
 
