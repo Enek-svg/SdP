@@ -1,26 +1,23 @@
-// render.js — todo lo que toca el DOM. No decide reglas del juego, solo pinta `state`.
+// render.js — todo lo que toca el DOM y el mapa Leaflet. No decide reglas del juego, solo pinta `state`.
 (function (root, deps) {
   'use strict';
 
-  const { timeString, escapeHtml } = deps.Utils;
+  const { timeString, escapeHtml, percentToLatLng } = deps.Utils;
   const Engine = deps.Engine;
   const C = deps.Constants;
 
   const dom = {};
-  const unitPinEls = new Map();
-  const incidentPinEls = new Map();
+  let leafletMap = null;
+  const unitMarkers = new Map();
+  const incidentMarkers = new Map();
+  const crowdMarkers = new Map();
+  let routeTrack = null;
+  let routeProgress = null;
 
   function cacheDom() {
-    dom.queue = document.getElementById('queue');
     dom.unitList = document.getElementById('units');
-    dom.mapWorld = document.getElementById('map-world');
-    dom.routeLayer = document.getElementById('route-layer');
     dom.clock = document.getElementById('clock');
-    dom.callCount = document.getElementById('call-count');
     dom.unitCount = document.getElementById('unit-count');
-    dom.selectionSummary = document.getElementById('selection-summary');
-    dom.dispatchBtn = document.getElementById('dispatch');
-    dom.decisionPanel = document.getElementById('decision-panel');
     dom.mapTip = document.getElementById('map-tip');
     dom.served = document.getElementById('served');
     dom.trust = document.getElementById('trust');
@@ -29,58 +26,139 @@
     dom.score = document.getElementById('score');
     dom.difficultyLabel = document.getElementById('difficulty');
     dom.difficultySelect = document.getElementById('difficulty-select');
-    dom.districtFilter = document.getElementById('district-filter');
-    dom.priorityFilter = document.getElementById('priority-filter');
     dom.historyList = document.getElementById('history-list');
     dom.log = document.getElementById('log');
     dom.toast = document.getElementById('toast');
-    dom.attentionBanner = document.getElementById('attention-banner');
     dom.pauseBtn = document.getElementById('pause-toggle');
     dom.soundBtn = document.getElementById('sound-toggle');
     dom.speedButtons = Array.from(document.querySelectorAll('[data-speed]'));
     dom.patrolHint = document.getElementById('patrol-hint');
     dom.objectiveBanner = document.getElementById('objective-banner');
     dom.startOverlay = document.getElementById('start-overlay');
+    dom.menuSelect = document.getElementById('menu-select');
+    dom.menuBrief = document.getElementById('menu-brief');
+    dom.briefTitle = document.getElementById('brief-title');
+    dom.briefText = document.getElementById('brief-text');
+    dom.briefMeta = document.getElementById('brief-meta');
     dom.endOverlay = document.getElementById('end-overlay');
     dom.endTitle = document.getElementById('end-title');
     dom.endStats = document.getElementById('end-stats');
-    dom.menuBtn = document.getElementById('menu-btn');
+    dom.sceneOverlay = document.getElementById('scene-overlay');
   }
 
-  function notify(message) {
-    dom.toast.textContent = message;
-    dom.toast.classList.add('show');
-    window.clearTimeout(notify.timeout);
-    notify.timeout = window.setTimeout(() => dom.toast.classList.remove('show'), 2200);
-  }
-
-  function renderCalls(state, onSelectCall) {
-    Engine.sortQueue(state);
-    const visibleCalls = Engine.getVisibleCalls(state);
-    dom.queue.innerHTML = '';
-    if (!visibleCalls.length) {
-      const empty = document.createElement('div');
-      empty.className = 'empty-note';
-      empty.textContent = 'No hay avisos con estos filtros.';
-      dom.queue.append(empty);
-    }
-    visibleCalls.forEach((call) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = `call${state.selectedCall === call.id ? ' selected' : ''}${call.status === 'done' ? ' done' : ''}`;
-      button.setAttribute('aria-pressed', String(state.selectedCall === call.id));
-      const statusLabel = call.status === 'done' ? 'resuelto' : call.status === 'awaiting_decision' ? 'decisión' : call.status === 'assigned' ? 'en curso' : call.severity;
-      const metaLabel = call.status === 'awaiting_decision' ? 'Elige una respuesta' : call.status === 'assigned' ? 'Unidad en camino' : call.status === 'done' ? 'Atendido' : 'Pendiente';
-      button.innerHTML = `<div class="call-top"><span class="call-id">${escapeHtml(call.id)}</span><span class="severity ${call.level}">${escapeHtml(statusLabel)}</span></div><h3>${escapeHtml(call.title)}</h3><div class="call-meta"><span class="location">${escapeHtml(call.location)}</span><span>${escapeHtml(metaLabel)}</span></div>`;
-      button.addEventListener('click', () => onSelectCall(call.id));
-      dom.queue.append(button);
+  // --- mapa Leaflet, sobre calles reales (Madrid · Puerta del Sol) ---
+  function initMap() {
+    leafletMap = L.map('map-canvas', { zoomControl: false, attributionControl: true })
+      .setView([(C.mapBounds.north + C.mapBounds.south) / 2, (C.mapBounds.east + C.mapBounds.west) / 2], C.mapZoom);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap, &copy; CARTO',
+      maxZoom: 19
+    }).addTo(leafletMap);
+    C.mapPoints.forEach((point) => {
+      const ll = percentToLatLng(C.mapBounds, point.x, point.y);
+      L.marker([ll.lat, ll.lng], {
+        icon: L.divIcon({ className: '', html: `<div class="poi-marker ${point.type}">${escapeHtml(point.label)}</div>`, iconSize: [20, 20] }),
+        interactive: false
+      }).bindTooltip(point.name).addTo(leafletMap);
     });
-    dom.callCount.textContent = String(Engine.pendingCount(state));
+    return leafletMap;
+  }
+
+  function getMap() {
+    return leafletMap;
+  }
+
+  function zoomIn() { if (leafletMap) leafletMap.zoomIn(); }
+  function zoomOut() { if (leafletMap) leafletMap.zoomOut(); }
+
+  function clearDynamicLayers() {
+    unitMarkers.forEach((marker) => leafletMap.removeLayer(marker));
+    incidentMarkers.forEach((marker) => leafletMap.removeLayer(marker));
+    crowdMarkers.forEach((marker) => leafletMap.removeLayer(marker));
+    unitMarkers.clear();
+    incidentMarkers.clear();
+    crowdMarkers.clear();
+    if (routeTrack) { leafletMap.removeLayer(routeTrack); routeTrack = null; }
+    if (routeProgress) { leafletMap.removeLayer(routeProgress); routeProgress = null; }
+  }
+
+  function renderRoute(state) {
+    if (routeTrack) { leafletMap.removeLayer(routeTrack); routeTrack = null; }
+    if (routeProgress) { leafletMap.removeLayer(routeProgress); routeProgress = null; }
+    const call = state.calls.find((item) => item.status === 'assigned');
+    if (!call) return;
+    const unit = state.units.find((item) => item.id === call.assignedTo);
+    if (!unit) return;
+    const start = percentToLatLng(C.mapBounds, call.routeStartX, call.routeStartY);
+    const corner = percentToLatLng(C.mapBounds, call.x, call.routeStartY);
+    const target = percentToLatLng(C.mapBounds, call.x, call.y);
+    const current = percentToLatLng(C.mapBounds, unit.x, unit.y);
+    routeTrack = L.polyline([[start.lat, start.lng], [corner.lat, corner.lng], [target.lat, target.lng]], {
+      color: '#f0bc65', weight: 3, opacity: 0.45, dashArray: '6 8'
+    }).addTo(leafletMap);
+    const passedCorner = Math.abs(unit.y - call.routeStartY) > 0.01;
+    const progressPoints = passedCorner
+      ? [[start.lat, start.lng], [corner.lat, corner.lng], [current.lat, current.lng]]
+      : [[start.lat, start.lng], [current.lat, current.lng]];
+    routeProgress = L.polyline(progressPoints, { color: '#f0bc65', weight: 3 }).addTo(leafletMap);
+  }
+
+  function unitIcon(unit, selected) {
+    const classes = `unit-marker${unit.status === 'busy' ? ' busy' : ''}${selected ? ' selected' : ''}${unit.patrolTarget ? ' patrolling' : ''}`;
+    return L.divIcon({ className: '', html: `<div class="${classes}">${escapeHtml(unit.id)}</div>`, iconSize: [30, 25] });
+  }
+
+  function incidentIcon(call, selected) {
+    const classes = `incident-marker severity-${call.level}${selected ? ' selected' : ''}`;
+    return L.divIcon({ className: '', html: `<div class="${classes}"><span>${escapeHtml(call.kind)}</span></div>`, iconSize: [23, 23] });
+  }
+
+  function renderMap(state, handlers) {
+    clearDynamicLayers();
+    state.calls.filter((call) => call.status !== 'done').forEach((call) => {
+      const ll = percentToLatLng(C.mapBounds, call.x, call.y);
+      if (call.crowd) {
+        const crowdMarker = L.marker([ll.lat, ll.lng], {
+          icon: L.divIcon({ className: '', html: '<div class="crowd-marker"></div>', iconSize: [70, 70] }),
+          interactive: false
+        }).addTo(leafletMap);
+        crowdMarkers.set(call.id, crowdMarker);
+      }
+      const marker = L.marker([ll.lat, ll.lng], { icon: incidentIcon(call, state.selectedCall === call.id) })
+        .addTo(leafletMap)
+        .on('click', (event) => {
+          L.DomEvent.stopPropagation(event);
+          handlers.onIncidentClick(call.id);
+        });
+      incidentMarkers.set(call.id, marker);
+    });
+    state.units.forEach((unit) => {
+      const ll = percentToLatLng(C.mapBounds, unit.x, unit.y);
+      const marker = L.marker([ll.lat, ll.lng], { icon: unitIcon(unit, state.selectedUnit === unit.id), zIndexOffset: 500 })
+        .addTo(leafletMap)
+        .on('click', (event) => {
+          L.DomEvent.stopPropagation(event);
+          handlers.onSelectUnit(unit.id);
+        });
+      unitMarkers.set(unit.id, marker);
+    });
+    renderRoute(state);
+  }
+
+  // Se llama en cada frame: solo mueve los marcadores ya existentes, sin reconstruir el mapa.
+  function updatePositions(state) {
+    state.units.forEach((unit) => {
+      const marker = unitMarkers.get(unit.id);
+      if (marker) {
+        const ll = percentToLatLng(C.mapBounds, unit.x, unit.y);
+        marker.setLatLng([ll.lat, ll.lng]);
+      }
+    });
+    renderRoute(state);
   }
 
   function renderUnits(state, onSelectUnit) {
     dom.unitList.innerHTML = '';
-    unitPinEls.clear();
     state.units.forEach((unit) => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -94,163 +172,15 @@
     dom.unitCount.textContent = String(state.units.filter((unit) => unit.status === 'free').length);
   }
 
-  function renderRoutes(state) {
-    dom.routeLayer.replaceChildren();
-    state.calls.filter((call) => call.status === 'assigned').forEach((call) => {
-      const unit = state.units.find((item) => item.id === call.assignedTo);
-      if (!unit) return;
-      const startX = call.routeStartX * 10;
-      const startY = call.routeStartY * 6;
-      const cornerX = call.x * 10;
-      const cornerY = startY;
-      const targetX = call.x * 10;
-      const targetY = call.y * 6;
-      const track = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      track.classList.add('route-track');
-      track.setAttribute('d', `M ${startX} ${startY} L ${cornerX} ${cornerY} L ${targetX} ${targetY}`);
-      dom.routeLayer.append(track);
-      const progress = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      progress.classList.add('route-progress');
-      const passedCorner = Math.abs(unit.y - call.routeStartY) > 0.01;
-      const progressPath = passedCorner
-        ? `M ${startX} ${startY} L ${cornerX} ${cornerY} L ${unit.x * 10} ${unit.y * 6}`
-        : `M ${startX} ${startY} L ${unit.x * 10} ${unit.y * 6}`;
-      progress.setAttribute('d', progressPath);
-      dom.routeLayer.append(progress);
-    });
-  }
-
-  function renderCrowd(call) {
-    const group = document.createElement('div');
-    group.className = 'crowd-group';
-    group.style.left = `${call.x}%`;
-    group.style.top = `${call.y}%`;
-    group.setAttribute('aria-hidden', 'true');
-    C.crowdPositions.forEach((position, index) => {
-      const person = document.createElement('span');
-      person.className = 'crowd-person';
-      person.style.left = `${position[0]}%`;
-      person.style.top = `${position[1]}%`;
-      person.style.setProperty('--drift-x', `${((index % 5) - 2) * 2.5}px`);
-      person.style.setProperty('--drift-y', `${((index % 4) - 1.5) * 2.5}px`);
-      person.style.setProperty('--pace', `${2.1 + (index % 4) * 0.35}s`);
-      person.style.setProperty('--delay', `${-index * 0.14}s`);
-      group.append(person);
-    });
-    dom.mapWorld.append(group);
-  }
-
-  function renderMap(state, handlers) {
-    dom.mapWorld.querySelectorAll('.unit-pin, .incident-pin, .map-poi, .crowd-group').forEach((pin) => pin.remove());
-    incidentPinEls.clear();
-    unitPinEls.clear();
-    renderRoutes(state);
-    C.mapPoints.forEach((point) => {
-      const poi = document.createElement('button');
-      poi.type = 'button';
-      poi.className = `map-poi ${point.type}`;
-      poi.style.left = `${point.x}%`;
-      poi.style.top = `${point.y}%`;
-      poi.title = point.name;
-      poi.setAttribute('aria-label', point.name);
-      poi.textContent = point.label;
-      poi.addEventListener('click', () => { dom.mapTip.textContent = point.name; });
-      dom.mapWorld.append(poi);
-    });
-    state.calls.filter((call) => call.status !== 'done').forEach((call) => {
-      if (call.crowd) renderCrowd(call);
-      const pin = document.createElement('button');
-      pin.type = 'button';
-      pin.className = `incident-pin${state.selectedCall === call.id ? ' selected' : ''}`;
-      pin.style.left = `${call.x}%`;
-      pin.style.top = `${call.y}%`;
-      pin.setAttribute('aria-label', `Aviso ${call.id}: ${call.title}`);
-      pin.innerHTML = `<span>${escapeHtml(call.kind)}</span>`;
-      pin.addEventListener('click', () => handlers.onSelectCall(call.id));
-      dom.mapWorld.append(pin);
-      incidentPinEls.set(call.id, pin);
-    });
-    state.units.forEach((unit) => {
-      const pin = document.createElement('button');
-      pin.type = 'button';
-      pin.className = `unit-pin${unit.status === 'busy' ? ' busy' : ''}${state.selectedUnit === unit.id ? ' selected' : ''}${unit.patrolTarget ? ' patrolling' : ''}`;
-      pin.style.left = `${unit.x}%`;
-      pin.style.top = `${unit.y}%`;
-      pin.textContent = unit.id;
-      pin.setAttribute('aria-label', `Seleccionar unidad ${unit.id}`);
-      pin.addEventListener('click', () => handlers.onSelectUnit(unit.id));
-      dom.mapWorld.append(pin);
-      unitPinEls.set(unit.id, pin);
-    });
-  }
-
-  // Se llama en cada frame: solo mueve los pines ya existentes, sin reconstruir el DOM.
-  function updatePositions(state) {
-    state.units.forEach((unit) => {
-      const pin = unitPinEls.get(unit.id);
-      if (pin) {
-        pin.style.left = `${unit.x}%`;
-        pin.style.top = `${unit.y}%`;
-        const shouldPatrol = Boolean(unit.patrolTarget);
-        pin.classList.toggle('patrolling', shouldPatrol);
-      }
-    });
-    renderRoutes(state);
-  }
-
-  function renderSummary(state, handlers) {
-    const call = state.calls.find((item) => item.id === state.selectedCall);
+  function renderSummary(state) {
     const unit = state.units.find((item) => item.id === state.selectedUnit);
-    if (call && unit) {
-      dom.selectionSummary.innerHTML = `<strong>${escapeHtml(call.id)} · ${escapeHtml(unit.id)}</strong>${escapeHtml(call.title)}`;
-    } else if (call) {
-      dom.selectionSummary.innerHTML = `<strong>${escapeHtml(call.id)} · ${escapeHtml(call.title)}</strong>Ahora elige una unidad disponible.`;
-    } else if (unit) {
-      dom.selectionSummary.innerHTML = `<strong>${escapeHtml(unit.id)} seleccionada</strong>Elige un aviso, o haz clic en el mapa para enviarla de patrulla.`;
-    } else {
-      dom.selectionSummary.innerHTML = '<strong>Sin intervención seleccionada</strong>Elige un aviso y una unidad disponible.';
-    }
-    dom.dispatchBtn.disabled = !(call && unit && call.status === 'pending' && unit.status === 'free');
-
-    if (call && call.status === 'awaiting_decision') {
-      dom.decisionPanel.hidden = false;
-      dom.decisionPanel.innerHTML = `<div><div class="decision-title">Decisión requerida · ${escapeHtml(call.id)}</div><div class="decision-copy">${escapeHtml(call.prompt)}</div></div><div class="decision-options"><button type="button" data-choice="dialogue">Dialogar y mediar</button><button type="button" data-choice="support">Pedir apoyo sanitario</button><button type="button" data-choice="reinforcements">Solicitar refuerzos</button></div>`;
-      dom.decisionPanel.querySelectorAll('[data-choice]').forEach((button) => {
-        button.addEventListener('click', () => handlers.onDecision(call.id, button.dataset.choice));
-      });
-    } else {
-      dom.decisionPanel.hidden = true;
-      dom.decisionPanel.innerHTML = '';
-    }
-
-    const waiting = state.calls.filter((item) => item.status === 'awaiting_decision');
-    if (waiting.length) {
-      dom.attentionBanner.hidden = false;
-      dom.attentionBanner.innerHTML = '';
-      waiting.forEach((item) => {
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = 'attention-chip';
-        chip.textContent = `⚠ ${item.id} esperando decisión`;
-        chip.addEventListener('click', () => handlers.onSelectCall(item.id));
-        dom.attentionBanner.append(chip);
-      });
-    } else {
-      dom.attentionBanner.hidden = true;
-      dom.attentionBanner.innerHTML = '';
-    }
-
-    dom.patrolHint.hidden = !(unit && !call);
-
+    dom.patrolHint.hidden = !unit;
     const activeCrowd = state.calls.some((item) => item.crowd && item.status !== 'done');
-    dom.mapTip.textContent = call
-      ? `${call.id} · ${call.location}${unit ? '  /  ' + unit.id + ' seleccionado' : '  /  selecciona una unidad'}`
-      : unit
-        ? `${unit.id} lista. Haz clic en el mapa para mandarla de patrulla.`
-        : activeCrowd
-          ? 'Manifestación activa · personas en movimiento. Las unidades siguen avanzando solas.'
-          : 'Las unidades se mueven solas; elige avisos conforme lleguen.';
-
+    dom.mapTip.textContent = unit
+      ? `${unit.id} lista. Toca un aviso para despacharla o el mapa para patrulla.`
+      : activeCrowd
+        ? 'Manifestación activa · toca un grupo libre y después un aviso.'
+        : 'Toca un grupo libre y después un aviso para despacharlo.';
     dom.served.textContent = String(state.served);
     dom.trust.textContent = `${Math.round(state.trust)}%`;
     dom.trust.className = `metric-value ${state.trust >= 65 ? 'good' : 'warn'}`;
@@ -329,6 +259,28 @@
 
   function renderStartOverlay(visible) {
     dom.startOverlay.hidden = !visible;
+    if (visible) showMenuStep('select');
+  }
+
+  function showMenuStep(step) {
+    dom.menuSelect.hidden = step !== 'select';
+    dom.menuBrief.hidden = step !== 'brief';
+  }
+
+  function renderBriefing(scenarioKey) {
+    const scenario = C.scenarios[scenarioKey];
+    if (!scenario) return;
+    dom.briefTitle.textContent = scenario.label;
+    dom.briefText.textContent = scenario.briefing;
+    const metaParts = [];
+    if (scenario.shiftMinutes != null) {
+      metaParts.push(`Duración: ${Math.round(scenario.shiftMinutes / 60 * 10) / 10}h de turno`);
+      metaParts.push(`Objetivo: ${scenario.targetServed} avisos resueltos`);
+    } else {
+      metaParts.push('Sin límite de tiempo ni objetivo');
+    }
+    dom.briefMeta.textContent = metaParts.join(' · ');
+    showMenuStep('brief');
   }
 
   function renderDifficultyBox(state) {
@@ -337,28 +289,73 @@
     if (dom.difficultySelect) dom.difficultySelect.value = state.difficulty;
   }
 
-  function renderFilters(state) {
-    if (dom.districtFilter) dom.districtFilter.value = state.filterState.district;
-    if (dom.priorityFilter) dom.priorityFilter.value = state.filterState.priority;
+  // Escena a pantalla completa cuando una unidad llega a un aviso: texto de la
+  // situación y opciones. Solo se reconstruye por un evento discreto (no en
+  // cada frame), así que es seguro reescribir el innerHTML.
+  function renderSceneOverlay(state, handlers) {
+    const call = state.calls.find((item) => item.status === 'awaiting_decision');
+    if (!call) {
+      dom.sceneOverlay.hidden = true;
+      dom.sceneOverlay.innerHTML = '';
+      return;
+    }
+    const script = Engine.getSceneScript(call.kind);
+    const intro = script.intro.replace('{location}', call.location);
+    const optionsHtml = script.options
+      .map((option) => `<button type="button" class="scene-option" data-option="${escapeHtml(option.id)}">${escapeHtml(option.label)}</button>`)
+      .join('');
+    dom.sceneOverlay.hidden = false;
+    dom.sceneOverlay.innerHTML = `<div class="overlay-card scene-card">
+      <div class="eyebrow">${escapeHtml(call.id)} · ${escapeHtml(call.location)}</div>
+      <h2>${escapeHtml(script.title)}</h2>
+      <p class="scene-intro">${escapeHtml(intro)}</p>
+      <div class="scene-options">${optionsHtml}</div>
+    </div>`;
+    dom.sceneOverlay.querySelectorAll('[data-option]').forEach((button) => {
+      button.addEventListener('click', () => handlers.onSceneChoice(call.id, button.dataset.option));
+    });
+  }
+
+  function showSceneResult({ callId, title, text, trustDelta, failed }, onContinue) {
+    const sign = trustDelta > 0 ? '+' : '';
+    dom.sceneOverlay.hidden = false;
+    dom.sceneOverlay.innerHTML = `<div class="overlay-card scene-card">
+      <div class="eyebrow">${escapeHtml(callId)} · ${failed ? 'complicación' : 'resultado'}</div>
+      <h2>${escapeHtml(title)}</h2>
+      <p class="scene-intro">${escapeHtml(text)}</p>
+      <p class="scene-trust ${trustDelta >= 0 ? 'good' : 'warn'}">Confianza vecinal: ${sign}${trustDelta}%</p>
+      <div class="scene-options"><button type="button" class="primary" id="scene-continue">Continuar</button></div>
+    </div>`;
+    document.getElementById('scene-continue').addEventListener('click', onContinue);
+  }
+
+  function notify(message) {
+    dom.toast.textContent = message;
+    dom.toast.classList.add('show');
+    window.clearTimeout(notify.timeout);
+    notify.timeout = window.setTimeout(() => dom.toast.classList.remove('show'), 2200);
   }
 
   function renderAll(state, handlers) {
     renderClockOnly(state);
-    dom.mapWorld.style.transform = `scale(${state.zoom})`;
-    renderCalls(state, handlers.onSelectCall);
-    renderUnits(state, handlers.onSelectUnit);
     renderMap(state, handlers);
-    renderSummary(state, handlers);
+    renderUnits(state, handlers.onSelectUnit);
+    renderSummary(state);
     renderLog(state);
     renderHistory(state);
     renderDifficultyBox(state);
-    renderFilters(state);
     renderSpeedControls(state);
     renderObjective(state);
     renderEndScreen(state);
+    renderSceneOverlay(state, handlers);
   }
 
-  const api = { cacheDom, renderAll, updatePositions, renderClockOnly, notify, renderSpeedControls, renderObjective, renderEndScreen, renderStartOverlay };
+  const api = {
+    cacheDom, initMap, getMap, zoomIn, zoomOut,
+    renderAll, updatePositions, renderClockOnly, renderObjective, renderSpeedControls,
+    renderStartOverlay, renderBriefing, showMenuStep,
+    showSceneResult, notify
+  };
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;

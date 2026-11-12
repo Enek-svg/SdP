@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101715">
   <title>Distrito | Sala de coordinación</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -31,136 +32,35 @@
     </header>
 
     <div class="objective-banner" id="objective-banner" hidden aria-live="polite"></div>
-    <div class="attention-banner" id="attention-banner" hidden aria-live="polite"></div>
 
     <main class="layout">
-      <section class="column left" aria-label="Avisos pendientes">
-        <div class="column-head">
-          <div><div class="eyebrow">Centralita</div><h2>Avisos</h2></div>
-          <div class="head-actions">
-            <button type="button" class="mini-btn" id="new-call">Nuevo aviso</button>
-            <button type="button" class="mini-btn" id="reset-turn">Reset</button>
-          </div>
-          <span class="count" id="call-count">4</span>
-        </div>
-        <div class="filters" aria-label="Filtros de avisos">
-          <label>
-            <span>Zona</span>
-            <select id="district-filter">
-              <option value="all">Todas</option>
-              <option value="Centro">Centro</option>
-              <option value="San Miguel">San Miguel</option>
-              <option value="La Estación">La Estación</option>
-              <option value="Ribera">Ribera</option>
-            </select>
-          </label>
-          <label>
-            <span>Prioridad</span>
-            <select id="priority-filter">
-              <option value="all">Todas</option>
-              <option value="high">Alta</option>
-              <option value="medium">Media</option>
-              <option value="low">Baja</option>
-            </select>
-          </label>
-        </div>
-        <div class="queue-list" id="queue"></div>
-      </section>
-
-      <section class="column center" aria-label="Mapa y despacho">
+      <section class="column center" aria-label="Mapa">
         <div class="map-head">
-          <div class="map-title"><h2>Mapa operativo</h2><span class="district-tag">Distrito Centro · Sector 04</span></div>
-          <div class="map-legend"><span class="legend-item"><i class="legend-dot"></i>Unidades</span><span class="legend-item"><i class="legend-dot call-dot"></i>Avisos</span><span class="legend-item"><i class="legend-dot crowd-dot"></i>Manifestación</span><span class="legend-item"><i class="legend-dot risk-dot"></i>Atención</span></div>
+          <div class="map-title"><h2>Mapa operativo</h2><span class="district-tag">Madrid · Puerta del Sol</span></div>
+          <div class="map-legend"><span class="legend-item"><i class="legend-dot"></i>Grupos</span><span class="legend-item"><i class="legend-dot call-dot"></i>Avisos</span><span class="legend-item"><i class="legend-dot crowd-dot"></i>Manifestación</span></div>
         </div>
-        <div class="map" id="map" role="group" aria-label="Mapa operativo esquemático del distrito">
-          <div class="map-world" id="map-world">
-          <svg class="map-art" viewBox="0 0 1000 600" preserveAspectRatio="none" aria-hidden="true">
-            <defs>
-              <pattern id="block-grid" width="100" height="82" patternUnits="userSpaceOnUse">
-                <rect x="7" y="7" width="34" height="25" rx="3" class="building"/>
-                <rect x="48" y="7" width="43" height="25" rx="3" class="building building-alt"/>
-                <rect x="7" y="41" width="49" height="33" rx="3" class="building building-alt"/>
-                <rect x="63" y="41" width="28" height="33" rx="3" class="building"/>
-              </pattern>
-            </defs>
-            <rect width="1000" height="600" class="land"/>
-            <path class="district-fill fill-north" d="M0 0H470V190H0Z"/>
-            <path class="district-fill fill-east" d="M650 0H1000V340H730L650 260Z"/>
-            <path class="district-fill fill-center" d="M260 205H730V455H260Z"/>
-            <path class="district-fill fill-riverside" d="M0 390H420V600H0Z"/>
-            <rect x="0" y="0" width="1000" height="600" fill="url(#block-grid)" opacity=".74"/>
-            <path class="park-shape" d="M75 48h170q24 0 24 24v91q0 18-21 18H90q-19 0-19-20V70q0-22 4-22z"/>
-            <path class="park-path" d="M103 145q58-70 130-47m-113 65q39-49 101-64"/>
-            <path class="park-shape" d="M72 430q8-30 42-31h135q25 4 25 30v105q-3 26-31 26H102q-30-2-30-30z"/>
-            <path class="park-path" d="M100 462q65 54 142 6m-131 39q40-32 99-53"/>
-            <path class="river" d="M902-30C820 91 885 173 797 273S841 433 742 630"/>
-            <path class="river-edge" d="M902-30C820 91 885 173 797 273S841 433 742 630"/>
-            <g class="street major">
-              <path d="M-20 211H1020"/><path d="M-20 397H1020"/>
-              <path d="M293-20V620"/><path d="M642-20V620"/>
-              <path d="M-20 520L740 520"/>
-            </g>
-            <g class="street minor">
-              <path d="M0 103H1000"/><path d="M0 300H1000"/><path d="M0 475H1000"/>
-              <path d="M155-20V620"/><path d="M465-20V620"/><path d="M790-20V620"/>
-              <path d="M-20 570L765-20"/>
-            </g>
-            <g class="street-markings">
-              <path d="M0 211H1000"/><path d="M0 397H1000"/>
-              <path d="M293 0V600"/><path d="M642 0V600"/>
-            </g>
-            <g class="street-labels">
-              <text x="400" y="201">AVENIDA DEL CENTRO</text>
-              <text x="350" y="388">CALLE MAYOR</text>
-              <text x="300" y="293" transform="rotate(-90 300 293)">PASEO DE SAN MIGUEL</text>
-              <text x="650" y="330" transform="rotate(-90 650 330)">AVENIDA DE LA ESTACIÓN</text>
-              <text x="450" y="512">PASEO DE LA RIBERA</text>
-              <text x="110" y="286">C. DEL MERCADO</text>
-              <text x="710" y="112">C. DE LA ESTACIÓN</text>
-            </g>
-            <g class="risk-area">
-              <circle cx="542" cy="316" r="79"/>
-              <circle cx="542" cy="316" r="53"/>
-              <text x="542" y="316">ATENCIÓN</text>
-            </g>
-            <g class="map-compass" transform="translate(944 70)">
-              <path d="M0 26 12 0l12 26-12-7z"/>
-              <text x="12" y="-7">N</text>
-            </g>
-            <text class="map-scale" x="30" y="575">DISTRITO CENTRO · SECTOR 04</text>
-          </svg>
-          <svg class="route-layer" id="route-layer" viewBox="0 0 1000 600" preserveAspectRatio="none" aria-hidden="true"></svg>
-          <span class="district d1">San Miguel</span><span class="district d2">La Estación</span><span class="district d3">Centro</span><span class="district d4">Ribera</span>
-          <span class="map-label l1">Parque Norte</span><span class="map-label l2">Paseo del Río</span><span class="map-label l3">Plaza Mayor</span>
-          </div>
-          <div class="map-tip" id="map-tip">Selecciona un aviso y una unidad para coordinar la respuesta.</div>
-          <div class="patrol-hint" id="patrol-hint" hidden>Haz clic en el mapa para enviar la unidad de patrulla</div>
+        <div class="map" id="map" role="group" aria-label="Mapa operativo en calles reales">
+          <div id="map-canvas"></div>
+          <div class="map-tip" id="map-tip">Toca un grupo libre y después un aviso para despacharlo.</div>
+          <div class="patrol-hint" id="patrol-hint" hidden>Grupo seleccionado: toca el mapa para enviarlo de patrulla, o un aviso para despacharlo</div>
           <div class="map-controls"><button type="button" aria-label="Acercar mapa" id="zoom-in">+</button><button type="button" aria-label="Alejar mapa" id="zoom-out">−</button></div>
         </div>
-        <div class="dispatch-bar">
-          <div class="selection-summary" id="selection-summary"><strong>Sin intervención seleccionada</strong>Elige un aviso y una unidad disponible.</div>
-          <div class="dispatch-actions">
-            <select class="action-select" id="approach" aria-label="Tipo de respuesta">
-              <option value="diálogo">Mediación y diálogo</option>
-              <option value="tráfico">Apoyo de tráfico</option>
-              <option value="asistencia">Asistencia ciudadana</option>
-            </select>
-            <button type="button" class="primary" id="dispatch" disabled><span aria-hidden="true">↗</span> Asignar unidad</button>
-          </div>
-        </div>
-        <div class="decision-panel" id="decision-panel" hidden aria-live="polite"></div>
         <button class="primary advance" id="advance" type="button">Avanzar +15 min <span aria-hidden="true">→</span></button>
       </section>
 
-      <aside class="column right" aria-label="Unidades y resumen de turno">
-        <div class="column-head"><div><div class="eyebrow">Recursos</div><h2>Unidades</h2></div><span class="count" id="unit-count">4</span></div>
+      <aside class="column right" aria-label="Grupos y resumen de turno">
+        <div class="column-head"><div><div class="eyebrow">Recursos</div><h2>Grupos</h2></div><span class="count" id="unit-count">4</span></div>
         <div class="unit-list" id="units"></div>
+        <div class="head-actions command-actions">
+          <button type="button" class="mini-btn" id="new-call">Nuevo aviso</button>
+          <button type="button" class="mini-btn" id="reset-turn">Reset</button>
+        </div>
         <div class="section-break"><div class="eyebrow">Estado del turno</div></div>
         <div class="metrics">
           <div class="metric"><div class="metric-label">Confianza vecinal</div><div class="metric-value good" id="trust">78%</div></div>
           <div class="metric"><div class="metric-label">Avisos atendidos</div><div class="metric-value" id="served">0</div></div>
           <div class="metric"><div class="metric-label">Tiempo medio</div><div class="metric-value" id="response">—</div></div>
-          <div class="metric"><div class="metric-label">Unidades libres</div><div class="metric-value good" id="available">4 / 4</div></div>
+          <div class="metric"><div class="metric-label">Grupos libres</div><div class="metric-value good" id="available">4 / 4</div></div>
           <div class="metric"><div class="metric-label">Puntuación</div><div class="metric-value" id="score">0</div></div>
           <div class="metric"><div class="metric-label">Dificultad</div><div class="metric-value" id="difficulty">Media</div></div>
         </div>
@@ -182,7 +82,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <div class="overlay" id="start-overlay" hidden>
-    <div class="overlay-card">
+    <div class="overlay-card" id="menu-select">
       <div class="eyebrow">Distrito · Sala de coordinación</div>
       <h2>Elige el turno</h2>
       <div class="scenario-grid">
@@ -200,7 +100,19 @@
         </button>
       </div>
     </div>
+    <div class="overlay-card" id="menu-brief" hidden>
+      <div class="eyebrow">Parte de inteligencia</div>
+      <h2 id="brief-title">Turno</h2>
+      <p class="brief-text" id="brief-text"></p>
+      <div class="brief-meta" id="brief-meta"></div>
+      <div class="end-actions">
+        <button type="button" class="mini-btn" id="brief-back-btn">Volver</button>
+        <button type="button" class="primary" id="brief-start-btn">Empezar <span aria-hidden="true">↗</span></button>
+      </div>
+    </div>
   </div>
+
+  <div class="overlay" id="scene-overlay" hidden></div>
 
   <div class="overlay" id="end-overlay" hidden>
     <div class="overlay-card end-card">
@@ -213,6 +125,7 @@
     </div>
   </div>
 
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
   <script src="utils.js" defer></script>
   <script src="constants.js" defer></script>
   <script src="engine.js" defer></script>

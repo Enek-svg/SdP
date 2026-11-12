@@ -10,9 +10,11 @@
   const restored = Engine.restoreState();
   let state = restored || Engine.createState('libre');
   let menuOpen = !restored; // reabre el menú solo si no había sesión guardada
+  let pendingScenario = null;
   let audioCtx = null;
 
   Render.cacheDom();
+  Render.initMap();
 
   function startScenario(scenarioKey) {
     state = Engine.createState(scenarioKey);
@@ -27,7 +29,14 @@
   }
 
   document.querySelectorAll('[data-scenario]').forEach((button) => {
-    button.addEventListener('click', () => startScenario(button.dataset.scenario));
+    button.addEventListener('click', () => {
+      pendingScenario = button.dataset.scenario;
+      Render.renderBriefing(pendingScenario);
+    });
+  });
+  document.getElementById('brief-back-btn').addEventListener('click', () => Render.showMenuStep('select'));
+  document.getElementById('brief-start-btn').addEventListener('click', () => {
+    if (pendingScenario) startScenario(pendingScenario);
   });
   document.getElementById('menu-btn').addEventListener('click', goToMenu);
   document.getElementById('retry-btn').addEventListener('click', () => {
@@ -62,15 +71,7 @@
 
   document.addEventListener('pointerdown', ensureAudio, { once: true });
 
-  // --- selección de aviso / unidad ---
-  function selectCall(callId) {
-    const call = state.calls.find((item) => item.id === callId);
-    if (!call || call.status === 'done') return;
-    state.selectedCall = callId;
-    if (call.status === 'pending') state.selectedUnit = null;
-    refreshAll();
-  }
-
+  // --- selección de grupo y despacho tocando el mapa ---
   function selectUnit(unitId) {
     const unit = state.units.find((item) => item.id === unitId);
     if (!unit || unit.status !== 'free') return;
@@ -78,33 +79,48 @@
     refreshAll();
   }
 
-  function onDecision(callId, choice) {
-    const result = Engine.resolveDecision(state, callId, choice);
+  // Tocar un aviso: si hay un grupo libre seleccionado, se despacha al momento;
+  // si no, solo avisa de que hace falta elegir un grupo primero.
+  function onIncidentClick(callId) {
+    if (!state.selectedUnit) {
+      Render.notify('Selecciona primero un grupo libre.');
+      return;
+    }
+    const result = Engine.dispatchUnit(state, callId, state.selectedUnit);
     if (!result.ok) return;
-    Render.notify(`${callId}: ${result.outcomeText}.`);
-    beep(880, 140);
-    Engine.updateScore(state);
+    Render.notify(`${result.unit.id} en camino a ${result.call.location}.`);
+    beep(660, 120);
+    state.selectedUnit = null;
     refreshAll();
   }
 
-  const handlers = { onSelectCall: selectCall, onSelectUnit: selectUnit, onDecision };
+  // El resultado se muestra primero dentro de la escena (con "Continuar"); el
+  // refresco completo (que puede abrir la siguiente escena, si hay otra) se
+  // hace solo cuando el jugador pulsa continuar.
+  function onSceneChoice(callId, optionId) {
+    const result = Engine.resolveScene(state, callId, optionId);
+    if (!result.ok) return;
+    beep(result.failed ? 300 : 880, result.failed ? 260 : 150);
+    Render.showSceneResult({ callId, title: result.title, text: result.text, trustDelta: result.trustDelta, failed: result.failed }, () => {
+      refreshAll();
+    });
+  }
+
+  const handlers = { onSelectUnit: selectUnit, onIncidentClick, onSceneChoice };
 
   function refreshAll() {
     Render.renderAll(state, handlers);
     if (!menuOpen) Engine.saveState(state);
   }
 
-  // --- clic en el mapa: despachar unidad a un aviso, o mandarla de patrulla libre ---
-  const mapWorld = document.getElementById('map-world');
-  mapWorld.addEventListener('click', (event) => {
-    if (event.target.closest('.unit-pin, .incident-pin, .map-poi')) return; // ya gestionado por su propio listener
+  // --- clic en el mapa (fuera de un marcador): mandar el grupo seleccionado de patrulla ---
+  const map = Render.getMap();
+  map.on('click', (event) => {
     if (!state.selectedUnit) return;
     const unit = state.units.find((item) => item.id === state.selectedUnit);
     if (!unit || unit.status !== 'free') return;
-    const rect = mapWorld.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * 100;
-    const y = ((event.clientY - rect.top) / rect.height) * 100;
-    Engine.startPatrol(state, unit.id, x, y);
+    const percent = Utils.latLngToPercent(C.mapBounds, event.latlng.lat, event.latlng.lng);
+    Engine.startPatrol(state, unit.id, percent.x, percent.y);
     Render.notify(`${unit.id} en patrulla hacia la zona indicada.`);
     refreshAll();
   });
@@ -113,7 +129,7 @@
   document.getElementById('new-call').addEventListener('click', () => {
     const result = Engine.generateRandomCall(state);
     if (!result.ok) {
-      Render.notify('Hay demasiados avisos pendientes. Revisa la cola antes de añadir más.');
+      Render.notify('Hay demasiados avisos pendientes. Espera a que se resuelvan algunos.');
     } else {
       Render.notify(`Aviso ${result.call.id} registrado en ${result.call.location}.`);
       beep(520, 120);
@@ -133,27 +149,6 @@
 
   document.getElementById('difficulty-select').addEventListener('change', (event) => {
     Engine.setDifficulty(state, event.target.value);
-    refreshAll();
-  });
-
-  document.getElementById('district-filter').addEventListener('change', (event) => {
-    state.filterState.district = event.target.value;
-    refreshAll();
-  });
-
-  document.getElementById('priority-filter').addEventListener('change', (event) => {
-    state.filterState.priority = event.target.value;
-    refreshAll();
-  });
-
-  document.getElementById('dispatch').addEventListener('click', () => {
-    const approach = document.getElementById('approach').value;
-    const result = Engine.dispatchUnit(state, state.selectedCall, state.selectedUnit, approach);
-    if (!result.ok) return;
-    Render.notify(`${result.unit.id} en camino a ${result.call.location}.`);
-    beep(660, 120);
-    state.selectedCall = null;
-    state.selectedUnit = null;
     refreshAll();
   });
 
@@ -184,19 +179,12 @@
     });
   });
 
-  document.getElementById('zoom-in').addEventListener('click', () => {
-    state.zoom = Math.min(1.25, state.zoom + 0.05);
-    refreshAll();
-  });
-  document.getElementById('zoom-out').addEventListener('click', () => {
-    state.zoom = Math.max(0.8, state.zoom - 0.05);
-    refreshAll();
-  });
+  document.getElementById('zoom-in').addEventListener('click', () => Render.zoomIn());
+  document.getElementById('zoom-out').addEventListener('click', () => Render.zoomOut());
 
   function handleEvents(events) {
     events.forEach((event) => {
       if (event.type === 'arrived') {
-        Render.notify(`Decisión pendiente para ${event.callId}.`);
         beep(740, 160);
       } else if (event.type === 'spawn') {
         beep(520, 120);
@@ -214,7 +202,8 @@
     const deltaRealSeconds = Math.min((timestamp - lastTimestamp) / 1000, 0.25);
     lastTimestamp = timestamp;
 
-    if (!state.paused && !menuOpen) {
+    const sceneOpen = state.calls.some((call) => call.status === 'awaiting_decision');
+    if (!state.paused && !menuOpen && !sceneOpen) {
       const deltaGameMinutes = deltaRealSeconds * C.BASE_GAME_MINUTES_PER_SECOND * state.speed;
       const events = Engine.tick(state, deltaGameMinutes);
       if (events.length) {

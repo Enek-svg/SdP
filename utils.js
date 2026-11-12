@@ -40,7 +40,23 @@
     return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
   }
 
-  const api = { clamp, timeString, randomItem, randomBetween, uid, escapeHtml, numberOr };
+  // El motor guarda todas las posiciones como porcentaje (0-100) de un
+  // rectángulo abstracto. Estas dos funciones lo proyectan sobre una caja
+  // geográfica real (lat/lng) para dibujarlo en un mapa de verdad, y viceversa
+  // (por ejemplo al convertir un clic en el mapa de vuelta a coordenadas del motor).
+  function percentToLatLng(bounds, x, y) {
+    const lat = bounds.north - (clamp(y, 0, 100) / 100) * (bounds.north - bounds.south);
+    const lng = bounds.west + (clamp(x, 0, 100) / 100) * (bounds.east - bounds.west);
+    return { lat, lng };
+  }
+
+  function latLngToPercent(bounds, lat, lng) {
+    const y = ((bounds.north - lat) / (bounds.north - bounds.south)) * 100;
+    const x = ((lng - bounds.west) / (bounds.east - bounds.west)) * 100;
+    return { x: clamp(x, 0, 100), y: clamp(y, 0, 100) };
+  }
+
+  const api = { clamp, timeString, randomItem, randomBetween, uid, escapeHtml, numberOr, percentToLatLng, latLngToPercent };
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;

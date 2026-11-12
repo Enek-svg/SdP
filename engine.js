@@ -135,45 +135,52 @@
     return { ok: true, call };
   }
 
-  function dispatchUnit(state, callId, unitId, approachKey) {
+  function dispatchUnit(state, callId, unitId) {
     if (state.gameOver) return { ok: false };
     const call = state.calls.find((item) => item.id === callId);
     const unit = state.units.find((item) => item.id === unitId);
     if (!call || !unit || call.status !== 'pending' || unit.status !== 'free') {
       return { ok: false };
     }
-    const approach = C.approachConfig[approachKey] || C.approachConfig['diálogo'];
     call.status = 'assigned';
     call.minutes = 0;
     call.travelElapsed = 0;
     call.assignedTo = unit.id;
-    call.approach = approachKey;
     call.routeStartX = unit.x;
     call.routeStartY = unit.y;
     const routeDistance = Math.abs(call.x - unit.x) + Math.abs(call.y - unit.y) * 0.6;
-    const baseTravel = Math.max(5, Math.min(30, Math.ceil(routeDistance / 18) * 5));
-    call.travelMinutes = Math.max(3, Math.round(baseTravel * approach.travelFactor));
+    call.travelMinutes = Math.max(3, Math.min(30, Math.ceil(routeDistance / 18) * 5));
     unit.status = 'busy';
     unit.callId = call.id;
     unit.patrolTarget = null;
-    addLog(state, `${unit.id} asignada a ${call.id}: ${approach.label}.`);
+    addLog(state, `${unit.id} en camino a ${call.id}.`);
     return { ok: true, call, unit };
   }
 
-  function resolveDecision(state, callId, choice) {
+  // Al llegar la unidad se muestra una escena con texto y opciones (ver
+  // C.sceneScripts). Esta función resuelve la opción elegida, con la
+  // posibilidad de una complicación (failChance) que cambia el desenlace.
+  function getSceneScript(callKind) {
+    return C.sceneScripts[callKind] || C.sceneScripts.default;
+  }
+
+  function resolveScene(state, callId, optionId) {
     if (state.gameOver) return { ok: false };
     const call = state.calls.find((item) => item.id === callId);
     if (!call || call.status !== 'awaiting_decision') return { ok: false };
+    const script = getSceneScript(call.kind);
+    const option = script.options.find((item) => item.id === optionId);
+    if (!option) return { ok: false };
     const unit = state.units.find((item) => item.id === call.assignedTo);
-    const outcome = C.decisionOutcomes[choice];
-    if (!outcome) return { ok: false };
-    const approach = C.approachConfig[call.approach];
-    const bonus = approach && approach.matchesDecision === choice ? approach.bonusTrust : 0;
+    const failed = Math.random() < (option.failChance || 0);
+    const trustDelta = failed ? option.failTrust : option.trust;
+    const extraMinutes = failed ? option.failExtraMinutes : option.extraMinutes;
+    const text = failed ? option.failText : option.successText;
     call.status = 'done';
-    call.minutes += outcome.extraMinutes;
+    call.minutes += extraMinutes;
     state.served += 1;
     state.responseTotal += call.minutes;
-    state.trust = clamp(state.trust + outcome.trust + bonus + C.difficultyConfig[state.difficulty].trustBonus, 0, 99);
+    state.trust = clamp(state.trust + trustDelta + C.difficultyConfig[state.difficulty].trustBonus, 0, 99);
     state.districtHistory[call.location] = (state.districtHistory[call.location] || 0) + 1;
     if (unit) {
       unit.status = 'free';
@@ -181,10 +188,9 @@
       unit.location = call.location;
       unit.progress = Math.min(100, unit.progress + 4);
     }
-    const bonusText = bonus ? ' (enfoque acertado, +confianza)' : '';
-    addLog(state, `${call.assignedTo} ${outcome.text} (${call.id}).${bonusText}`);
+    addLog(state, `${call.assignedTo} · ${call.id}: ${text}`);
     if (state.selectedCall === call.id) state.selectedCall = null;
-    return { ok: true, call, outcomeText: outcome.text, bonus };
+    return { ok: true, title: script.title, text, trustDelta, failed };
   }
 
   function startPatrol(state, unitId, x, y) {
@@ -217,7 +223,6 @@
       }
       if (call.travelElapsed >= travelMinutes) {
         call.status = 'awaiting_decision';
-        call.prompt = `La unidad ${call.assignedTo} ya está en ${call.location}. ¿Cómo quieres gestionar el aviso?`;
         addLog(state, `${call.id}: la unidad ha llegado. Se necesita una decisión.`);
         events.push({ type: 'arrived', callId: call.id });
       }
@@ -362,7 +367,8 @@
     updateScore,
     generateRandomCall,
     dispatchUnit,
-    resolveDecision,
+    resolveScene,
+    getSceneScript,
     startPatrol,
     tick,
     setDifficulty,
