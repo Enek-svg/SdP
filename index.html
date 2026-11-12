@@ -18,9 +18,18 @@
         <span class="shift-pill">Turno de mañana</span>
         <span class="live">Servicio activo</span>
         <span class="clock" id="clock">08:42</span>
+        <div class="speed-group" role="group" aria-label="Velocidad del tiempo">
+          <button type="button" class="mini-btn speed-btn" data-speed="1">1×</button>
+          <button type="button" class="mini-btn speed-btn" data-speed="3">3×</button>
+          <button type="button" class="mini-btn speed-btn" data-speed="6">6×</button>
+        </div>
+        <button type="button" class="mini-btn" id="pause-toggle" aria-pressed="false">Pausa</button>
+        <button type="button" class="mini-btn" id="sound-toggle" aria-pressed="false">🔊 Sonido</button>
         <button type="button" class="mini-btn save-btn" id="save-session">Guardar</button>
       </div>
     </header>
+
+    <div class="attention-banner" id="attention-banner" hidden aria-live="polite"></div>
 
     <main class="layout">
       <section class="column left" aria-label="Avisos pendientes">
@@ -123,6 +132,7 @@
           <span class="map-label l1">Parque Norte</span><span class="map-label l2">Paseo del Río</span><span class="map-label l3">Plaza Mayor</span>
           </div>
           <div class="map-tip" id="map-tip">Selecciona un aviso y una unidad para coordinar la respuesta.</div>
+          <div class="patrol-hint" id="patrol-hint" hidden>Haz clic en el mapa para enviar la unidad de patrulla</div>
           <div class="map-controls"><button type="button" aria-label="Acercar mapa" id="zoom-in">+</button><button type="button" aria-label="Alejar mapa" id="zoom-out">−</button></div>
         </div>
         <div class="dispatch-bar">
@@ -137,6 +147,7 @@
           </div>
         </div>
         <div class="decision-panel" id="decision-panel" hidden aria-live="polite"></div>
+        <button class="primary advance" id="advance" type="button">Avanzar +15 min <span aria-hidden="true">→</span></button>
       </section>
 
       <aside class="column right" aria-label="Unidades y resumen de turno">
@@ -159,8 +170,6 @@
             <option value="dificil">Difícil</option>
           </select>
         </div>
-        <button class="primary advance" id="advance" type="button">Avanzar 5 minutos <span aria-hidden="true">→</span></button>
-        <button class="primary advance" id="toggle-time" type="button" aria-pressed="false">Iniciar tiempo automático</button>
         <div class="section-break"><div class="eyebrow">Historial por distrito</div></div>
         <div class="history-list" id="history-list" aria-live="polite"></div>
         <div class="section-break"><div class="eyebrow">Registro reciente</div></div>
@@ -170,6 +179,10 @@
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="app.js" defer></script>
+  <script src="utils.js" defer></script>
+  <script src="constants.js" defer></script>
+  <script src="engine.js" defer></script>
+  <script src="render.js" defer></script>
+  <script src="main.js" defer></script>
 </body>
 </html>
