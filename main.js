@@ -79,19 +79,37 @@
     refreshAll();
   }
 
-  // Tocar un aviso: si hay un grupo libre seleccionado, se despacha al momento;
-  // si no, solo avisa de que hace falta elegir un grupo primero.
+  let dispatchPanelOpen = false;
+  let pendingDispatchCallId = null;
+
+  // Tocar un aviso pendiente abre el panel para elegir qué grupos enviar.
   function onIncidentClick(callId) {
-    if (!state.selectedUnit) {
-      Render.notify('Selecciona primero un grupo libre.');
-      return;
+    const call = state.calls.find((item) => item.id === callId);
+    if (!call || call.status !== 'pending') return;
+    pendingDispatchCallId = callId;
+    dispatchPanelOpen = true;
+    const freeUnits = state.units.filter((unit) => unit.status === 'free');
+    Render.renderDispatchPanel(call, freeUnits, onDispatchConfirm, onDispatchCancel);
+  }
+
+  function onDispatchConfirm(unitIds) {
+    if (!unitIds.length || !pendingDispatchCallId) return;
+    const result = Engine.dispatchUnits(state, pendingDispatchCallId, unitIds);
+    dispatchPanelOpen = false;
+    pendingDispatchCallId = null;
+    Render.hideDispatchPanel();
+    if (result.ok) {
+      Render.notify(`${result.units.map((unit) => unit.id).join(', ')} en camino a ${result.call.location}.`);
+      beep(660, 120);
     }
-    const result = Engine.dispatchUnit(state, callId, state.selectedUnit);
-    if (!result.ok) return;
-    Render.notify(`${result.unit.id} en camino a ${result.call.location}.`);
-    beep(660, 120);
     state.selectedUnit = null;
     refreshAll();
+  }
+
+  function onDispatchCancel() {
+    dispatchPanelOpen = false;
+    pendingDispatchCallId = null;
+    Render.hideDispatchPanel();
   }
 
   // El resultado se muestra primero dentro de la escena (con "Continuar"); el
@@ -202,7 +220,7 @@
     const deltaRealSeconds = Math.min((timestamp - lastTimestamp) / 1000, 0.25);
     lastTimestamp = timestamp;
 
-    const sceneOpen = state.calls.some((call) => call.status === 'awaiting_decision');
+    const sceneOpen = dispatchPanelOpen || state.calls.some((call) => call.status === 'awaiting_decision');
     if (!state.paused && !menuOpen && !sceneOpen) {
       const deltaGameMinutes = deltaRealSeconds * C.BASE_GAME_MINUTES_PER_SECOND * state.speed;
       const events = Engine.tick(state, deltaGameMinutes);

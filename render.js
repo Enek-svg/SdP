@@ -11,8 +11,7 @@
   const unitMarkers = new Map();
   const incidentMarkers = new Map();
   const crowdMarkers = new Map();
-  let routeTrack = null;
-  let routeProgress = null;
+  let routeLayers = [];
 
   function cacheDom() {
     dom.unitList = document.getElementById('units');
@@ -44,6 +43,7 @@
     dom.endTitle = document.getElementById('end-title');
     dom.endStats = document.getElementById('end-stats');
     dom.sceneOverlay = document.getElementById('scene-overlay');
+    dom.dispatchOverlay = document.getElementById('dispatch-overlay');
   }
 
   // --- mapa Leaflet, sobre calles reales (Madrid · Puerta del Sol) ---
@@ -63,7 +63,31 @@
         interactive: false
       }).bindTooltip(point.name).addTo(leafletMap);
     });
+    // peatones ambientales: vida de fondo por toda la ciudad, siempre en marcha
+    C.crowdPositions.forEach((pos, i) => {
+      const ll = percentToLatLng(C.mapBounds, pos[0], pos[1]);
+      L.marker([ll.lat, ll.lng], {
+        icon: L.divIcon({ className: '', html: `<div class="ambient-pedestrian" style="${wanderStyle(i, 4)}"></div>`, iconSize: [8, 8] }),
+        interactive: false
+      }).addTo(leafletMap);
+    });
     return leafletMap;
+  }
+
+  // genera un estilo inline con variables CSS para que cada punto "deambule" de forma
+  // distinta pero estable (sin Math.random, para no saltar entre renders)
+  function wanderStyle(seed, range) {
+    const driftX = (Math.sin(seed * 12.9898) * range).toFixed(1);
+    const driftY = (Math.cos(seed * 78.233) * range).toFixed(1);
+    const delay = ((seed * 0.53) % 3).toFixed(2);
+    const pace = (2.4 + (seed % 5) * 0.45).toFixed(2);
+    return `--drift-x:${driftX}px; --drift-y:${driftY}px; --delay:${delay}s; --pace:${pace}s;`;
+  }
+
+  function crowdPersonDots(count) {
+    return C.crowdPositions.slice(0, count).map((pos, i) => (
+      `<div class="crowd-person" style="left:${pos[0]}%; top:${pos[1]}%; ${wanderStyle(i, 6)}"></div>`
+    )).join('');
   }
 
   function getMap() {
@@ -80,29 +104,32 @@
     unitMarkers.clear();
     incidentMarkers.clear();
     crowdMarkers.clear();
-    if (routeTrack) { leafletMap.removeLayer(routeTrack); routeTrack = null; }
-    if (routeProgress) { leafletMap.removeLayer(routeProgress); routeProgress = null; }
+    routeLayers.forEach((layer) => leafletMap.removeLayer(layer));
+    routeLayers = [];
   }
 
   function renderRoute(state) {
-    if (routeTrack) { leafletMap.removeLayer(routeTrack); routeTrack = null; }
-    if (routeProgress) { leafletMap.removeLayer(routeProgress); routeProgress = null; }
-    const call = state.calls.find((item) => item.status === 'assigned');
-    if (!call) return;
-    const unit = state.units.find((item) => item.id === call.assignedTo);
-    if (!unit) return;
-    const start = percentToLatLng(C.mapBounds, call.routeStartX, call.routeStartY);
-    const corner = percentToLatLng(C.mapBounds, call.x, call.routeStartY);
-    const target = percentToLatLng(C.mapBounds, call.x, call.y);
-    const current = percentToLatLng(C.mapBounds, unit.x, unit.y);
-    routeTrack = L.polyline([[start.lat, start.lng], [corner.lat, corner.lng], [target.lat, target.lng]], {
-      color: '#f0bc65', weight: 3, opacity: 0.45, dashArray: '6 8'
-    }).addTo(leafletMap);
-    const passedCorner = Math.abs(unit.y - call.routeStartY) > 0.01;
-    const progressPoints = passedCorner
-      ? [[start.lat, start.lng], [corner.lat, corner.lng], [current.lat, current.lng]]
-      : [[start.lat, start.lng], [current.lat, current.lng]];
-    routeProgress = L.polyline(progressPoints, { color: '#f0bc65', weight: 3 }).addTo(leafletMap);
+    routeLayers.forEach((layer) => leafletMap.removeLayer(layer));
+    routeLayers = [];
+    state.calls.filter((item) => item.status === 'assigned').forEach((call) => {
+      const ids = Array.isArray(call.assignedTo) ? call.assignedTo : [call.assignedTo];
+      ids.forEach((id) => {
+        const unit = state.units.find((item) => item.id === id);
+        if (!unit || unit.routeStartX == null) return;
+        const start = percentToLatLng(C.mapBounds, unit.routeStartX, unit.routeStartY);
+        const corner = percentToLatLng(C.mapBounds, call.x, unit.routeStartY);
+        const target = percentToLatLng(C.mapBounds, call.x, call.y);
+        const current = percentToLatLng(C.mapBounds, unit.x, unit.y);
+        routeLayers.push(L.polyline([[start.lat, start.lng], [corner.lat, corner.lng], [target.lat, target.lng]], {
+          color: '#f0bc65', weight: 3, opacity: 0.45, dashArray: '6 8', interactive: false
+        }).addTo(leafletMap));
+        const passedCorner = Math.abs(unit.y - unit.routeStartY) > 0.01;
+        const pts = passedCorner
+          ? [[start.lat, start.lng], [corner.lat, corner.lng], [current.lat, current.lng]]
+          : [[start.lat, start.lng], [current.lat, current.lng]];
+        routeLayers.push(L.polyline(pts, { color: '#f0bc65', weight: 3, interactive: false }).addTo(leafletMap));
+      });
+    });
   }
 
   function unitIcon(unit, selected) {
@@ -121,7 +148,7 @@
       const ll = percentToLatLng(C.mapBounds, call.x, call.y);
       if (call.crowd) {
         const crowdMarker = L.marker([ll.lat, ll.lng], {
-          icon: L.divIcon({ className: '', html: '<div class="crowd-marker"></div>', iconSize: [70, 70] }),
+          icon: L.divIcon({ className: '', html: `<div class="crowd-marker">${crowdPersonDots(12)}</div>`, iconSize: [70, 70] }),
           interactive: false
         }).addTo(leafletMap);
         crowdMarkers.set(call.id, crowdMarker);
@@ -310,6 +337,7 @@
     dom.sceneOverlay.innerHTML = `<div class="overlay-card scene-card">
       <div class="eyebrow">${escapeHtml(call.id)} · ${escapeHtml(call.location)}</div>
       <h2>${escapeHtml(script.title)}</h2>
+      <div class="scene-units">${(Array.isArray(call.assignedTo) ? call.assignedTo : [call.assignedTo]).map((id) => `<span class="scene-unit-chip">${escapeHtml(id)}</span>`).join('')}</div>
       <p class="scene-intro">${escapeHtml(intro)}</p>
       <div class="scene-options">${optionsHtml}</div>
     </div>`;
@@ -329,6 +357,37 @@
       <div class="scene-options"><button type="button" class="primary" id="scene-continue">Continuar</button></div>
     </div>`;
     document.getElementById('scene-continue').addEventListener('click', onContinue);
+  }
+
+  function renderDispatchPanel(call, freeUnits, onConfirm, onCancel) {
+    if (!call) { hideDispatchPanel(); return; }
+    const rows = freeUnits.map((unit) => `
+      <label class="dispatch-unit-row">
+        <input type="checkbox" value="${escapeHtml(unit.id)}" />
+        <span class="dispatch-unit-id">${escapeHtml(unit.id)}</span>
+        <span class="dispatch-unit-type">${escapeHtml(unit.type)} · ${escapeHtml(unit.location)}</span>
+      </label>`).join('');
+    dom.dispatchOverlay.hidden = false;
+    dom.dispatchOverlay.innerHTML = `<div class="overlay-card dispatch-card">
+      <div class="eyebrow">${escapeHtml(call.id)} · ${escapeHtml(call.location)}</div>
+      <h2>${escapeHtml(call.title)}</h2>
+      <p class="scene-intro">Elige qué grupos enviar a este aviso.</p>
+      <div class="dispatch-unit-list">${rows || '<p class="scene-intro">No hay grupos libres.</p>'}</div>
+      <div class="scene-options dispatch-actions-row">
+        <button type="button" class="mini-btn" id="dispatch-cancel">Cancelar</button>
+        <button type="button" class="primary" id="dispatch-confirm" disabled>Enviar grupos</button>
+      </div>
+    </div>`;
+    const boxes = Array.from(dom.dispatchOverlay.querySelectorAll('input[type="checkbox"]'));
+    const confirmBtn = document.getElementById('dispatch-confirm');
+    boxes.forEach((cb) => cb.addEventListener('change', () => { confirmBtn.disabled = !boxes.some((x) => x.checked); }));
+    confirmBtn.addEventListener('click', () => onConfirm(boxes.filter((x) => x.checked).map((x) => x.value)));
+    document.getElementById('dispatch-cancel').addEventListener('click', onCancel);
+  }
+
+  function hideDispatchPanel() {
+    dom.dispatchOverlay.hidden = true;
+    dom.dispatchOverlay.innerHTML = '';
   }
 
   function notify(message) {
@@ -356,7 +415,7 @@
     cacheDom, initMap, getMap, zoomIn, zoomOut,
     renderAll, updatePositions, renderClockOnly, renderObjective, renderSpeedControls,
     renderStartOverlay, renderBriefing, showMenuStep,
-    showSceneResult, notify
+    showSceneResult, notify, renderDispatchPanel, hideDispatchPanel
   };
 
   if (typeof module !== 'undefined' && module.exports) {

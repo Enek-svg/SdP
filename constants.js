@@ -2,7 +2,7 @@
 (function (root) {
   'use strict';
 
-  const STORAGE_KEY = 'sdp-sim-state-v2';
+  const STORAGE_KEY = 'sdp-sim-state-v3';
 
   const severityRank = { high: 3, medium: 2, low: 1 };
 

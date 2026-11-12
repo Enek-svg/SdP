@@ -135,26 +135,40 @@
     return { ok: true, call };
   }
 
-  function dispatchUnit(state, callId, unitId) {
+  // Despacha uno o varios grupos libres a un mismo aviso. Cada grupo recorre
+  // su propia ruta desde su posición actual (pueden venir de bases distintas
+  // y llegar en momentos distintos); el aviso pasa a "awaiting_decision" solo
+  // cuando TODOS los grupos asignados han llegado.
+  function dispatchUnits(state, callId, unitIds) {
     if (state.gameOver) return { ok: false };
     const call = state.calls.find((item) => item.id === callId);
-    const unit = state.units.find((item) => item.id === unitId);
-    if (!call || !unit || call.status !== 'pending' || unit.status !== 'free') {
+    if (!call || call.status !== 'pending' || !Array.isArray(unitIds) || !unitIds.length) {
       return { ok: false };
     }
+    const units = unitIds
+      .map((id) => state.units.find((item) => item.id === id))
+      .filter((unit) => unit && unit.status === 'free');
+    if (!units.length) return { ok: false };
     call.status = 'assigned';
     call.minutes = 0;
-    call.travelElapsed = 0;
-    call.assignedTo = unit.id;
-    call.routeStartX = unit.x;
-    call.routeStartY = unit.y;
-    const routeDistance = Math.abs(call.x - unit.x) + Math.abs(call.y - unit.y) * 0.6;
-    call.travelMinutes = Math.max(3, Math.min(30, Math.ceil(routeDistance / 18) * 5));
-    unit.status = 'busy';
-    unit.callId = call.id;
-    unit.patrolTarget = null;
-    addLog(state, `${unit.id} en camino a ${call.id}.`);
-    return { ok: true, call, unit };
+    call.assignedTo = units.map((unit) => unit.id);
+    units.forEach((unit) => {
+      unit.status = 'busy';
+      unit.callId = call.id;
+      unit.patrolTarget = null;
+      unit.routeStartX = unit.x;
+      unit.routeStartY = unit.y;
+      const routeDistance = Math.abs(call.x - unit.x) + Math.abs(call.y - unit.y) * 0.6;
+      unit.travelMinutes = Math.max(3, Math.min(30, Math.ceil(routeDistance / 18) * 5));
+      unit.travelElapsed = 0;
+    });
+    addLog(state, `${units.map((unit) => unit.id).join(', ')} en camino a ${call.id}.`);
+    return { ok: true, call, units };
+  }
+
+  // Alias de un solo grupo, por comodidad/compatibilidad.
+  function dispatchUnit(state, callId, unitId) {
+    return dispatchUnits(state, callId, [unitId]);
   }
 
   // Al llegar la unidad se muestra una escena con texto y opciones (ver
@@ -171,7 +185,8 @@
     const script = getSceneScript(call.kind);
     const option = script.options.find((item) => item.id === optionId);
     if (!option) return { ok: false };
-    const unit = state.units.find((item) => item.id === call.assignedTo);
+    const assignedIds = Array.isArray(call.assignedTo) ? call.assignedTo : [call.assignedTo];
+    const units = assignedIds.map((id) => state.units.find((item) => item.id === id)).filter(Boolean);
     const failed = Math.random() < (option.failChance || 0);
     const trustDelta = failed ? option.failTrust : option.trust;
     const extraMinutes = failed ? option.failExtraMinutes : option.extraMinutes;
@@ -182,13 +197,17 @@
     state.responseTotal += call.minutes;
     state.trust = clamp(state.trust + trustDelta + C.difficultyConfig[state.difficulty].trustBonus, 0, 99);
     state.districtHistory[call.location] = (state.districtHistory[call.location] || 0) + 1;
-    if (unit) {
+    units.forEach((unit) => {
       unit.status = 'free';
       unit.callId = null;
       unit.location = call.location;
       unit.progress = Math.min(100, unit.progress + 4);
-    }
-    addLog(state, `${call.assignedTo} · ${call.id}: ${text}`);
+      unit.routeStartX = null;
+      unit.routeStartY = null;
+      unit.travelMinutes = null;
+      unit.travelElapsed = null;
+    });
+    addLog(state, `${units.map((unit) => unit.id).join(', ') || call.assignedTo} · ${call.id}: ${text}`);
     if (state.selectedCall === call.id) state.selectedCall = null;
     return { ok: true, title: script.title, text, trustDelta, failed };
   }
@@ -211,19 +230,24 @@
     state.gameTicks += deltaMinutes;
 
     state.calls.filter((call) => call.status === 'assigned').forEach((call) => {
-      const travelMinutes = Math.max(3, Number(call.travelMinutes) || 10);
-      call.travelElapsed = Math.min(travelMinutes, (call.travelElapsed || 0) + deltaMinutes);
-      call.minutes = call.travelElapsed;
-      const unit = state.units.find((item) => item.id === call.assignedTo);
-      if (unit) {
-        const progress = call.travelElapsed / travelMinutes;
-        const position = routePositionAt(call.routeStartX, call.routeStartY, call.x, call.y, progress);
+      const assignedIds = Array.isArray(call.assignedTo) ? call.assignedTo : [call.assignedTo];
+      const units = assignedIds.map((id) => state.units.find((item) => item.id === id)).filter(Boolean);
+      let allArrived = units.length > 0;
+      let maxElapsed = call.minutes || 0;
+      units.forEach((unit) => {
+        const travelMinutes = Math.max(3, Number(unit.travelMinutes) || 10);
+        unit.travelElapsed = Math.min(travelMinutes, (unit.travelElapsed || 0) + deltaMinutes);
+        const progress = unit.travelElapsed / travelMinutes;
+        const position = routePositionAt(unit.routeStartX, unit.routeStartY, call.x, call.y, progress);
         unit.x = position.x;
         unit.y = position.y;
-      }
-      if (call.travelElapsed >= travelMinutes) {
+        if (unit.travelElapsed < travelMinutes) allArrived = false;
+        maxElapsed = Math.max(maxElapsed, unit.travelElapsed);
+      });
+      call.minutes = maxElapsed;
+      if (allArrived) {
         call.status = 'awaiting_decision';
-        addLog(state, `${call.id}: la unidad ha llegado. Se necesita una decisión.`);
+        addLog(state, `${call.id}: ${units.map((unit) => unit.id).join(', ')} en el lugar. Se necesita una decisión.`);
         events.push({ type: 'arrived', callId: call.id });
       }
     });
@@ -320,11 +344,16 @@
         }
       }
       state.calls.filter((call) => call.status === 'assigned').forEach((call) => {
-        const unit = state.units.find((item) => item.id === call.assignedTo);
-        call.routeStartX = numberOr(call.routeStartX, unit ? unit.x : call.x);
-        call.routeStartY = numberOr(call.routeStartY, unit ? unit.y : call.y);
-        call.travelMinutes = Math.max(3, numberOr(call.travelMinutes, 10));
-        call.travelElapsed = numberOr(call.travelElapsed, call.minutes || 0);
+        const ids = Array.isArray(call.assignedTo) ? call.assignedTo : [call.assignedTo];
+        call.assignedTo = ids;
+        ids.forEach((id) => {
+          const unit = state.units.find((item) => item.id === id);
+          if (!unit) return;
+          unit.routeStartX = numberOr(unit.routeStartX, unit.x);
+          unit.routeStartY = numberOr(unit.routeStartY, unit.y);
+          unit.travelMinutes = Math.max(3, numberOr(unit.travelMinutes, 10));
+          unit.travelElapsed = numberOr(unit.travelElapsed, call.minutes || 0);
+        });
       });
       state.selectedCall = parsed.selectedCall || null;
       state.selectedUnit = parsed.selectedUnit || null;
@@ -364,6 +393,7 @@
     pendingCount,
     addLog,
     routePositionAt,
+    dispatchUnits,
     updateScore,
     generateRandomCall,
     dispatchUnit,

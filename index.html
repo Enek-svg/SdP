@@ -41,8 +41,8 @@
         </div>
         <div class="map" id="map" role="group" aria-label="Mapa operativo en calles reales">
           <div id="map-canvas"></div>
-          <div class="map-tip" id="map-tip">Toca un grupo libre y después un aviso para despacharlo.</div>
-          <div class="patrol-hint" id="patrol-hint" hidden>Grupo seleccionado: toca el mapa para enviarlo de patrulla, o un aviso para despacharlo</div>
+          <div class="map-tip" id="map-tip">Toca un aviso para elegir qué grupos enviar.</div>
+          <div class="patrol-hint" id="patrol-hint" hidden>Grupo seleccionado: toca el mapa para enviarlo de patrulla</div>
           <div class="map-controls"><button type="button" aria-label="Acercar mapa" id="zoom-in">+</button><button type="button" aria-label="Alejar mapa" id="zoom-out">−</button></div>
         </div>
         <button class="primary advance" id="advance" type="button">Avanzar +15 min <span aria-hidden="true">→</span></button>
@@ -112,6 +112,7 @@
     </div>
   </div>
 
+  <div class="overlay" id="dispatch-overlay" hidden></div>
   <div class="overlay" id="scene-overlay" hidden></div>
 
   <div class="overlay" id="end-overlay" hidden>
