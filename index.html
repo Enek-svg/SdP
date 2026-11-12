@@ -18,6 +18,7 @@
         <span class="shift-pill">Turno de mañana</span>
         <span class="live">Servicio activo</span>
         <span class="clock" id="clock">08:42</span>
+        <button type="button" class="mini-btn save-btn" id="save-session">Guardar</button>
       </div>
     </header>
 
@@ -31,6 +32,27 @@
           </div>
           <span class="count" id="call-count">4</span>
         </div>
+        <div class="filters" aria-label="Filtros de avisos">
+          <label>
+            <span>Zona</span>
+            <select id="district-filter">
+              <option value="all">Todas</option>
+              <option value="Centro">Centro</option>
+              <option value="San Miguel">San Miguel</option>
+              <option value="La Estación">La Estación</option>
+              <option value="Ribera">Ribera</option>
+            </select>
+          </label>
+          <label>
+            <span>Prioridad</span>
+            <select id="priority-filter">
+              <option value="all">Todas</option>
+              <option value="high">Alta</option>
+              <option value="medium">Media</option>
+              <option value="low">Baja</option>
+            </select>
+          </label>
+        </div>
         <div class="queue-list" id="queue"></div>
       </section>
 
@@ -42,8 +64,17 @@
         <div class="map" id="map" role="img" aria-label="Mapa esquemático del distrito con unidades policiales y avisos">
           <div class="water"></div><div class="park one"></div><div class="park two"></div>
           <div class="road r1"></div><div class="road r2"></div><div class="road r3"></div><div class="road r4"></div><div class="road r5"></div>
+          <div class="zone-zone north"></div>
+          <div class="zone-zone east"></div>
+          <div class="zone-zone west"></div>
+          <div class="zone-zone south"></div>
           <span class="district d1">San Miguel</span><span class="district d2">La Estación</span><span class="district d3">Centro</span><span class="district d4">Ribera</span>
           <span class="map-label l1">Parque Norte</span><span class="map-label l2">Paseo del Río</span><span class="map-label l3">Plaza Mayor</span>
+          <div class="map-marker sector hospital" style="left: 25%; top: 12%;">Hospital</div>
+          <div class="map-marker sector station" style="left: 80%; top: 36%;">Estación</div>
+          <div class="map-marker sector police" style="left: 54%; top: 52%;">Comisaría</div>
+          <div class="map-marker sector civic" style="left: 70%; top: 72%;">Mercado</div>
+          <div class="map-marker sector green" style="left: 18%; top: 70%;">Jardín</div>
           <div class="map-tip" id="map-tip">Selecciona un aviso y una unidad para coordinar la respuesta.</div>
           <div class="map-controls"><button type="button" aria-label="Acercar mapa" id="zoom-in">+</button><button type="button" aria-label="Alejar mapa" id="zoom-out">−</button></div>
         </div>
@@ -70,9 +101,21 @@
           <div class="metric"><div class="metric-label">Avisos atendidos</div><div class="metric-value" id="served">0</div></div>
           <div class="metric"><div class="metric-label">Tiempo medio</div><div class="metric-value" id="response">—</div></div>
           <div class="metric"><div class="metric-label">Unidades libres</div><div class="metric-value good" id="available">4 / 4</div></div>
+          <div class="metric"><div class="metric-label">Puntuación</div><div class="metric-value" id="score">0</div></div>
+          <div class="metric"><div class="metric-label">Dificultad</div><div class="metric-value" id="difficulty">Media</div></div>
+        </div>
+        <div class="difficulty-box">
+          <label for="difficulty-select">Nivel de dificultad</label>
+          <select id="difficulty-select">
+            <option value="facil">Fácil</option>
+            <option value="media" selected>Media</option>
+            <option value="dificil">Difícil</option>
+          </select>
         </div>
         <button class="primary advance" id="advance" type="button">Avanzar 5 minutos <span aria-hidden="true">→</span></button>
         <button class="primary advance" id="toggle-time" type="button" aria-pressed="false">Iniciar tiempo automático</button>
+        <div class="section-break"><div class="eyebrow">Historial por distrito</div></div>
+        <div class="history-list" id="history-list" aria-live="polite"></div>
         <div class="section-break"><div class="eyebrow">Registro reciente</div></div>
         <div class="log" id="log" aria-live="polite"><div class="log-row"><span class="log-time">08:42</span><span>Turno iniciado. Cuatro unidades disponibles.</span></div></div>
       </aside>

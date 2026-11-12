@@ -20,6 +20,25 @@
       { id: 'P-14', type: 'Patrulla de proximidad', location: 'Base Ribera', status: 'free', x: 81, y: 58, color: 'cyan', progress: 92 },
       { id: 'P-08', type: 'Patrulla de proximidad', location: 'Base Estación', status: 'free', x: 57, y: 78, color: 'cyan', progress: 74 }
     ];
+    const mapPoints = [
+      { label: 'H', type: 'hospital', x: 25, y: 12 },
+      { label: 'E', type: 'station', x: 80, y: 36 },
+      { label: 'C', type: 'policia', x: 54, y: 52 },
+      { label: 'M', type: 'civic', x: 70, y: 72 },
+      { label: 'J', type: 'green', x: 18, y: 70 },
+      { label: 'Z1', type: 'hospital', x: 34, y: 24 },
+      { label: 'Z2', type: 'station', x: 62, y: 28 },
+      { label: 'Z3', type: 'civic', x: 42, y: 78 },
+      { label: 'Z4', type: 'green', x: 76, y: 62 }
+    ];
+    const STORAGE_KEY = 'sdp-sim-state-v1';
+    const severityRank = { high: 3, medium: 2, low: 1 };
+    const difficultyConfig = {
+      facil: { label: 'Fácil', callFactor: 0.7, trustBonus: 2, scoreMultiplier: 1.15 },
+      media: { label: 'Media', callFactor: 1, trustBonus: 1, scoreMultiplier: 1 },
+      dificil: { label: 'Difícil', callFactor: 1.35, trustBonus: 0, scoreMultiplier: 1.3 }
+    };
+    const districtNames = ['Centro', 'San Miguel', 'La Estación', 'Ribera'];
     let calls = JSON.parse(JSON.stringify(baseCalls));
     let units = JSON.parse(JSON.stringify(baseUnits));
     let selectedCall = null;
@@ -31,14 +50,135 @@
     let responseTotal = 0;
     let autoTimer = null;
     let gameTicks = 0;
+    let logEntries = [];
+    let score = 0;
+    let difficulty = 'media';
+    let districtHistory = Object.fromEntries(districtNames.map((name) => [name, 0]));
+    let filterState = { district: 'all', priority: 'all' };
     const queue = document.getElementById('queue');
     const unitList = document.getElementById('units');
     const map = document.getElementById('map');
+
+    function getPriorityValue(level) {
+      return severityRank[level] || 0;
+    }
+
+    function sortQueue() {
+      calls.sort((a, b) => {
+        const aState = a.status === 'pending' ? 0 : a.status === 'assigned' ? 1 : a.status === 'awaiting_decision' ? 2 : 3;
+        const bState = b.status === 'pending' ? 0 : b.status === 'assigned' ? 1 : b.status === 'awaiting_decision' ? 2 : 3;
+        if (aState !== bState) return aState - bState;
+        return getPriorityValue(b.level) - getPriorityValue(a.level);
+      });
+    }
+
+    function createInitialLog() {
+      logEntries = [{ time: timeString(), text: 'Turno iniciado. Cuatro unidades disponibles.' }];
+    }
+
+    function saveState() {
+      try {
+        const payload = {
+          calls,
+          units,
+          selectedCall,
+          selectedUnit,
+          clockMinutes,
+          served,
+          trust,
+          responseTotal,
+          gameTicks,
+          zoom,
+          logEntries,
+          score,
+          difficulty,
+          districtHistory,
+          filterState
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      } catch (error) {
+        console.warn('No se pudo guardar la sesión', error);
+      }
+    }
+
+    function restoreState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return false;
+        const parsed = JSON.parse(raw);
+        if (!parsed || !Array.isArray(parsed.calls) || !Array.isArray(parsed.units)) return false;
+        calls = parsed.calls;
+        units = parsed.units;
+        selectedCall = parsed.selectedCall || null;
+        selectedUnit = parsed.selectedUnit || null;
+        clockMinutes = Number(parsed.clockMinutes) || 8 * 60 + 42;
+        served = Number(parsed.served) || 0;
+        trust = Number(parsed.trust) || 78;
+        responseTotal = Number(parsed.responseTotal) || 0;
+        gameTicks = Number(parsed.gameTicks) || 0;
+        zoom = Number(parsed.zoom) || 1;
+        score = Number(parsed.score) || 0;
+        difficulty = parsed.difficulty && difficultyConfig[parsed.difficulty] ? parsed.difficulty : 'media';
+        districtHistory = parsed.districtHistory && typeof parsed.districtHistory === 'object' ? { ...Object.fromEntries(districtNames.map((name) => [name, 0])), ...parsed.districtHistory } : Object.fromEntries(districtNames.map((name) => [name, 0]));
+        filterState = parsed.filterState && typeof parsed.filterState === 'object' ? { ...filterState, ...parsed.filterState } : { ...filterState };
+        logEntries = Array.isArray(parsed.logEntries) && parsed.logEntries.length ? parsed.logEntries.slice(0, 5) : [{ time: timeString(), text: 'Turno recuperado.' }];
+        return true;
+      } catch (error) {
+        console.warn('No se pudo restaurar la sesión', error);
+        return false;
+      }
+    }
 
     function timeString(total = clockMinutes) {
       const hours = Math.floor(total / 60) % 24;
       const minutes = total % 60;
       return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    }
+
+    function setDifficulty(nextDifficulty) {
+      if (!difficultyConfig[nextDifficulty]) return;
+      difficulty = nextDifficulty;
+      const select = document.getElementById('difficulty-select');
+      if (select) select.value = difficulty;
+      applyDifficultySettings();
+      renderAll();
+    }
+
+    function applyDifficultySettings() {
+      const config = difficultyConfig[difficulty];
+      const difficultyLabel = document.getElementById('difficulty');
+      if (difficultyLabel) difficultyLabel.textContent = config.label;
+      const scoreLabel = document.getElementById('score');
+      if (scoreLabel) scoreLabel.textContent = String(Math.round(score));
+      const select = document.getElementById('difficulty-select');
+      if (select) select.value = difficulty;
+    }
+
+    function updateScore() {
+      const config = difficultyConfig[difficulty];
+      const pendingPenalty = calls.filter((call) => call.status === 'pending').length * 14;
+      score = Math.max(0, Math.round((served * 180 + trust * 2 + responseTotal * 3 - pendingPenalty) * config.scoreMultiplier));
+      applyDifficultySettings();
+    }
+
+    function renderHistory() {
+      const historyList = document.getElementById('history-list');
+      if (!historyList) return;
+      historyList.innerHTML = '';
+      districtNames.forEach((district) => {
+        const row = document.createElement('div');
+        row.className = 'history-row';
+        row.innerHTML = `<span>${district}</span><strong>${districtHistory[district] || 0}</strong>`;
+        historyList.append(row);
+      });
+    }
+
+    function getVisibleCalls() {
+      return calls.filter((call) => {
+        const districtMatch = filterState.district === 'all' || call.location === filterState.district;
+        const priorityMatch = filterState.priority === 'all' || call.level === filterState.priority;
+        return districtMatch && priorityMatch;
+      });
     }
 
     function resetTurn() {
@@ -51,8 +191,10 @@
       trust = 78;
       responseTotal = 0;
       gameTicks = 0;
+      score = 0;
+      districtHistory = Object.fromEntries(districtNames.map((name) => [name, 0]));
+      createInitialLog();
       stopAutoTime();
-      document.getElementById('log').innerHTML = `<div class="log-row"><span class="log-time">${timeString()}</span><span>Turno reiniciado. Cuatro unidades disponibles.</span></div>`;
       document.getElementById('clock').textContent = timeString();
       renderAll();
     }
@@ -63,27 +205,37 @@
         return;
       }
       const template = callTemplates[Math.floor(Math.random() * callTemplates.length)];
-      const id = `AV-${String(220 + Math.floor(Math.random() * 60)).padStart(3, '0')}`;
-      calls.push({
+      let id = `AV-${String(220 + Math.floor(Math.random() * 60)).padStart(3, '0')}`;
+      while (calls.some((call) => call.id === id)) {
+        id = `AV-${String(220 + Math.floor(Math.random() * 60)).padStart(3, '0')}`;
+      }
+      const difficultyFactor = difficultyConfig[difficulty].callFactor;
+      const severityBias = Math.random() < 0.4 * difficultyFactor ? 'high' : template.level;
+      const call = {
         id,
         title: template.title,
         location: template.location,
         severity: template.severity,
-        level: template.level,
+        level: severityBias,
         x: template.x,
         y: template.y,
         kind: template.kind,
         status: 'pending',
         minutes: 0
-      });
-      addLog(`Nuevo aviso ${id} recibido en ${template.location}.`);
-      notify(`Aviso ${id} registrado en ${template.location}.`);
+      };
+      calls.push(call);
+      districtHistory[call.location] = (districtHistory[call.location] || 0) + 1;
+      sortQueue();
+      addLog(`Nuevo aviso ${id} recibido en ${call.location}.`);
+      notify(`Aviso ${id} registrado en ${call.location}.`);
       renderAll();
     }
 
     function renderCalls() {
+      sortQueue();
+      const visibleCalls = getVisibleCalls();
       queue.innerHTML = '';
-      calls.forEach((call) => {
+      visibleCalls.forEach((call) => {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = `call${selectedCall === call.id ? ' selected' : ''}${call.status === 'done' ? ' done' : ''}`;
@@ -119,7 +271,17 @@
     }
 
     function renderMap() {
-      map.querySelectorAll('.unit-pin, .incident-pin').forEach((pin) => pin.remove());
+      map.querySelectorAll('.unit-pin, .incident-pin, .map-poi').forEach((pin) => pin.remove());
+      mapPoints.forEach((point) => {
+        const poi = document.createElement('div');
+        poi.className = `map-poi ${point.type}`;
+        poi.style.left = `${point.x}%`;
+        poi.style.top = `${point.y}%`;
+        poi.title = point.label;
+        poi.setAttribute('aria-label', `Punto de interés ${point.label}`);
+        poi.textContent = point.label;
+        map.append(poi);
+      });
       calls.filter((call) => call.status !== 'done').forEach((call) => {
         const pin = document.createElement('button');
         pin.type = 'button';
@@ -184,14 +346,35 @@
       document.getElementById('response').textContent = served ? `${Math.round(responseTotal / served)} min` : '—';
     }
 
-    function renderAll() { renderCalls(); renderUnits(); renderMap(); renderSummary(); }
+    function renderLog() {
+      const log = document.getElementById('log');
+      log.innerHTML = '';
+      logEntries.slice(0, 4).forEach((entry) => {
+        const row = document.createElement('div');
+        row.className = 'log-row';
+        row.innerHTML = `<span class="log-time">${entry.time}</span><span>${entry.text}</span>`;
+        log.append(row);
+      });
+    }
+
+    function renderAll() {
+      updateScore();
+      document.getElementById('clock').textContent = timeString();
+      map.style.backgroundSize = `${190 * zoom}px ${160 * zoom}px, ${230 * zoom}px ${190 * zoom}px, ${54 * zoom}px ${54 * zoom}px, ${54 * zoom}px ${54 * zoom}px`;
+      renderCalls();
+      renderUnits();
+      renderMap();
+      renderSummary();
+      renderLog();
+      renderHistory();
+      applyDifficultySettings();
+      saveState();
+    }
 
     function addLog(message) {
-      const row = document.createElement('div');
-      row.className = 'log-row';
-      row.innerHTML = `<span class="log-time">${timeString()}</span><span>${message}</span>`;
-      document.getElementById('log').prepend(row);
-      while (document.getElementById('log').children.length > 4) document.getElementById('log').lastElementChild.remove();
+      logEntries.unshift({ time: timeString(), text: message });
+      logEntries = logEntries.slice(0, 5);
+      renderLog();
     }
 
     function notify(message) {
@@ -236,7 +419,8 @@
       call.minutes += outcome.extraMinutes;
       served += 1;
       responseTotal += call.minutes;
-      trust = Math.min(99, trust + outcome.trust);
+      trust = Math.min(99, trust + outcome.trust + difficultyConfig[difficulty].trustBonus);
+      districtHistory[call.location] = (districtHistory[call.location] || 0) + 1;
       if (unit) {
         unit.status = 'free';
         unit.callId = null;
@@ -251,6 +435,21 @@
 
     document.getElementById('new-call').addEventListener('click', generateRandomCall);
     document.getElementById('reset-turn').addEventListener('click', resetTurn);
+    document.getElementById('save-session').addEventListener('click', () => {
+      saveState();
+      notify('Sesión guardada en el navegador.');
+    });
+    document.getElementById('difficulty-select').addEventListener('change', (event) => {
+      setDifficulty(event.target.value);
+    });
+    document.getElementById('district-filter').addEventListener('change', (event) => {
+      filterState.district = event.target.value;
+      renderAll();
+    });
+    document.getElementById('priority-filter').addEventListener('change', (event) => {
+      filterState.priority = event.target.value;
+      renderAll();
+    });
 
     document.getElementById('dispatch').addEventListener('click', () => {
       const call = calls.find((item) => item.id === selectedCall);
@@ -285,7 +484,11 @@
         }
       });
       const pendingCount = calls.filter((call) => call.status === 'pending').length;
-      if (gameTicks % 6 === 0 && pendingCount < 6 && Math.random() < 0.65) generateRandomCall();
+      const spawnChance = difficultyConfig[difficulty].callFactor * (gameTicks % 3 === 0 ? 0.85 : 0.55);
+      if (gameTicks % 6 === 0 && pendingCount < 6 && Math.random() < spawnChance) generateRandomCall();
+      if (pendingCount > 4 && trust > 0 && Math.random() < 0.25) {
+        trust = Math.max(0, trust - 1);
+      }
       renderAll();
     }
 
@@ -295,11 +498,26 @@
     document.getElementById('zoom-in').addEventListener('click', () => {
       zoom = Math.min(1.25, zoom + .05);
       map.style.backgroundSize = `${190 * zoom}px ${160 * zoom}px, ${230 * zoom}px ${190 * zoom}px, ${54 * zoom}px ${54 * zoom}px, ${54 * zoom}px ${54 * zoom}px`;
+      saveState();
     });
     document.getElementById('zoom-out').addEventListener('click', () => {
       zoom = Math.max(.8, zoom - .05);
       map.style.backgroundSize = `${190 * zoom}px ${160 * zoom}px, ${230 * zoom}px ${190 * zoom}px, ${54 * zoom}px ${54 * zoom}px, ${54 * zoom}px ${54 * zoom}px`;
+      saveState();
     });
 
+    window.addEventListener('beforeunload', saveState);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') saveState();
+    });
+
+    const hasSavedState = restoreState();
+    if (!hasSavedState) {
+      createInitialLog();
+    }
+    const districtFilter = document.getElementById('district-filter');
+    const priorityFilter = document.getElementById('priority-filter');
+    if (districtFilter) districtFilter.value = filterState.district;
+    if (priorityFilter) priorityFilter.value = filterState.priority;
     renderAll();
 
