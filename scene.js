@@ -7,14 +7,14 @@
 
   const W = 100;
   const H = 60;
-  const BASE_TENSION = [0, 12, 22, 35, 50, 72];
+  const BASE_TENSION = [0, 12, 22, 35, 56, 72];
   const STANCE_X = { hold: 26, talk: 33, advance: 46, retreat: 8, disperse: 52 };
 
   function moodOf(tension) {
     return tension < 35 ? 'calm' : tension < 70 ? 'tense' : 'violent';
   }
 
-  function create({ incident, support }) {
+  function create({ incident, support, mods }) {
     const squadIds = ['patrulla'];
     if (support.includes('apoyo')) squadIds.push('apoyo');
     if (support.includes('uip')) squadIds.push('uip');
@@ -36,10 +36,26 @@
     });
 
     const civCount = clamp(incident.crowd, 4, 36);
-    const civs = Array.from({ length: civCount }, () => ({
-      x: rand(60, 92), y: rand(6, 54), hx: rand(58, 93), hy: rand(6, 54),
-      p: Math.random(), k: Math.random(), flee: 0, fy: rand(-1, 1), angry: false
-    }));
+    const sevNow = incident.sev;
+    const agitShare = sevNow >= 5 ? 0.3 : sevNow >= 4 ? 0.22 : (sevNow >= 3 && incident.crowd >= 20) ? 0.1 : 0;
+    const famShare = incident.crowd >= 8 && sevNow <= 4 ? 0.15 : 0;
+    const civs = Array.from({ length: civCount }, () => {
+      const r = Math.random();
+      let type = 'normal';
+      if (r < agitShare) type = 'agitator';
+      else if (r < agitShare + famShare) type = 'family';
+      else if (r < agitShare + famShare + 0.15) type = 'curious';
+      const civ = {
+        type, x: rand(60, 92), y: rand(6, 54), hx: rand(58, 93), hy: rand(6, 54),
+        p: Math.random(), k: Math.random(), flee: 0, fy: rand(-1, 1), angry: false, gone: false, leaving: false
+      };
+      if (type === 'agitator') civ.p = Math.random() * 0.45;
+      else if (type === 'family') civ.p = 0.9;
+      else if (type === 'curious') { civ.p = 0.75 + Math.random() * 0.25; civ.hx = rand(68, 86); civ.hy = rand(14, 46); civ.x = civ.hx; civ.y = civ.hy; }
+      return civ;
+    });
+    if (agitShare > 0 && !civs.some((civ) => civ.type === 'agitator')) { civs[0].type = 'agitator'; civs[0].p = 0.2; }
+    const agitators = civs.filter((civ) => civ.type === 'agitator').length;
 
     const overResponse = support.includes('uip') && incident.sev <= 2;
     const sev = incident.sev;
@@ -51,8 +67,11 @@
 
     return {
       incident, support, squads, agents, civs,
+      agitShare: agitators / civs.length,
+      famNoticed: false,
       time: 0,
       limit: sev >= 5 ? 60 : sev >= 4 ? 52 : 45,
+      mods: mods || { rise: 1, calm: 1 },
       tension, maxTension: tension,
       baseRise: 1.1 * levelFactor * (incident.crowd >= 20 ? 1.2 : 1),
       stance,
@@ -96,7 +115,8 @@
     const t = sim.tension;
 
     // Tensión: sube sola y cada grupo la mueve según su postura y sus características.
-    let rate = sim.baseRise;
+    const mods = sim.mods || { rise: 1, calm: 1 };
+    let rate = sim.baseRise * mods.rise;
     sim.squads.forEach((squad) => {
       const st = sim.stance[squad.id];
       const ut = squad.type;
@@ -106,8 +126,11 @@
       else if (st === 'advance') effect = t < 35 ? -0.3 * ut.force : 0.9 * ut.force * (0.5 + t / 100);
       else if (st === 'retreat') effect = -0.9;
       else if (st === 'disperse') effect = t >= 65 ? 2.0 * ut.force : -2.3 * ut.force;
+      if (st === 'talk') effect *= (1 - 0.6 * sim.agitShare);
+      if (st === 'hold') effect *= (1 + 1.5 * sim.agitShare);
       if (st === 'advance' && t >= 50) sim.pushUsed = true;
       if (st === 'disperse') sim.disperseUsed = true;
+      if (effect < 0) effect *= mods.calm;
       rate += effect;
     });
     sim.tension = clamp(sim.tension + rate * dt, 0, 100);
@@ -119,16 +142,32 @@
       const targetX = STANCE_X[sim.stance[agent.squad]] + agent.offX;
       const dx = targetX - agent.x;
       const stepX = Math.sign(dx) * Math.min(Math.abs(dx), squad.type.speed * dt);
+      agent.moving = Math.abs(dx) > 0.15;
       agent.x += stepX;
       front = Math.max(front, agent.x);
     });
     sim.frontX = front;
 
-    // Civiles: los furiosos presionan la línea, los tranquilos se quedan; al dispersar huyen.
+    // Civiles: agitadores y furiosos presionan la línea, las familias se van, los curiosos se apartan.
     const dispersing = sim.squads.some((squad) => sim.stance[squad.id] === 'disperse');
+    const pushing = dispersing || sim.squads.some((squad) => sim.stance[squad.id] === 'advance');
     sim.civs.forEach((civ) => {
-      civ.angry = civ.p < sim.tension / 100;
-      if (dispersing && civ.x < front + 34 && civ.flee <= 0 && Math.random() < dt * 2) civ.flee = 1.6;
+      if (civ.gone) return;
+      civ.angry = civ.type !== 'family' && civ.type !== 'curious' && civ.p < sim.tension / 100;
+      if (civ.type === 'family') {
+        if (sim.tension >= 45) civ.leaving = true;
+        if (civ.leaving) {
+          civ.x += 16 * dt;
+          civ.y = clamp(civ.y + civ.fy * 3 * dt, 4, 56);
+          if (civ.x >= 97) {
+            civ.gone = true;
+            if (!sim.famNoticed) { sim.famNoticed = true; say(sim, 'Las familias abandonan la zona.'); }
+          }
+          return;
+        }
+      }
+      const reach = civ.type === 'curious' ? 30 : 34;
+      if ((civ.type === 'curious' ? pushing : dispersing) && civ.x < front + reach && civ.flee <= 0 && Math.random() < dt * 2) civ.flee = 1.6;
       if (civ.flee > 0) {
         civ.flee -= dt;
         civ.x = Math.min(97, civ.x + 22 * dt);
@@ -148,16 +187,19 @@
       civ.x = clamp(civ.x, 3, 97);
     });
 
-    // Objetos lanzados cuando la tensión es alta.
+    // Objetos lanzados cuando la tensión es alta; los agitadores lo hacen antes y más.
     sim.throwTimer -= dt;
     if (sim.throwTimer <= 0) {
-      sim.throwTimer = rand(3.5, 5.5);
-      const angry = sim.civs.filter((civ) => civ.angry && civ.flee <= 0);
-      if (sim.tension > 45 && angry.length) {
-        const from = angry[Math.floor(Math.random() * angry.length)];
+      sim.throwTimer = sim.agitShare > 0 ? rand(2.5, 4.5) : rand(3.5, 5.5);
+      const angry = sim.civs.filter((civ) => !civ.gone && civ.angry && civ.flee <= 0);
+      const agit = angry.filter((civ) => civ.type === 'agitator');
+      const threshold = sim.agitShare > 0 ? 35 : 45;
+      if (sim.tension > threshold && angry.length) {
+        const pool = agit.length ? agit : angry;
+        const from = pool[Math.floor(Math.random() * pool.length)];
         const target = sim.agents[Math.floor(Math.random() * sim.agents.length)];
         sim.projectiles.push({ x: from.x, y: from.y, tx: target.x, ty: target.y, t: 0 });
-        say(sim, 'Lanzan un objeto contra la línea.');
+        say(sim, agit.length ? 'Los encapuchados lanzan objetos.' : 'Lanzan un objeto contra la línea.');
       }
     }
     sim.projectiles.forEach((p) => {
@@ -203,7 +245,8 @@
       orders: sim.orders.map((item) => item.label),
       disperseUsed: sim.disperseUsed,
       pushUsed: sim.pushUsed,
-      trustPenalty: sim.trustPenalty
+      trustPenalty: sim.trustPenalty,
+      familiesAtRisk: sim.tension >= 60 ? sim.civs.filter((civ) => civ.type === 'family' && !civ.gone).length : 0
     };
   }
 
@@ -212,31 +255,52 @@
     const x = 80 * sx;
     const y = 30 * sy;
     ctx.save();
-    ctx.fillStyle = '#5a6b73';
     switch (sim.incident.prop) {
       case 'car': ctx.fillStyle = '#7b8791'; ctx.fillRect(x - 6 * sx, y - 2.5 * sy, 12 * sx, 5 * sy); ctx.fillStyle = '#273038'; ctx.fillRect(x - 3 * sx, y - 2 * sy, 5 * sx, 4 * sy); break;
       case 'speaker': ctx.fillStyle = '#b58bd9'; ctx.fillRect(x - 3 * sx, y - 3 * sy, 6 * sx, 6 * sy); break;
       case 'banner': ctx.fillStyle = '#f0bc65'; ctx.fillRect(x - 1 * sx, y - 12 * sy, 2 * sx, 24 * sy); break;
       case 'door': ctx.fillStyle = '#7a5a3a'; ctx.fillRect(x - 3 * sx, y - 6 * sy, 6 * sx, 12 * sy); break;
       case 'stall': ctx.fillStyle = '#c97a4a'; ctx.fillRect(x - 5 * sx, y - 3 * sy, 10 * sx, 6 * sy); break;
-      default: ctx.beginPath(); ctx.arc(x, y, 3 * sx, 0, Math.PI * 2); ctx.fill();
+      case 'fire': {
+        const flicker = 1 + Math.sin(sim.time * 14) * 0.18;
+        ctx.fillStyle = '#4a4f55'; ctx.fillRect(x - 3 * sx, y - 2 * sy, 6 * sx, 4 * sy);
+        ctx.fillStyle = '#ff8a2a'; ctx.beginPath(); ctx.ellipse(x, y - 3 * sy, 2.2 * sx, 3.6 * sy * flicker, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ffd25c'; ctx.beginPath(); ctx.ellipse(x, y - 2.4 * sy, 1.1 * sx, 2 * sy * flicker, 0, 0, Math.PI * 2); ctx.fill();
+        break;
+      }
+      case 'package': ctx.fillStyle = '#8a8f94'; ctx.fillRect(x - 2.5 * sx, y - 2.5 * sy, 5 * sx, 5 * sy); ctx.fillStyle = Math.sin(sim.time * 6) > 0 ? '#e5534b' : '#5a2320'; ctx.beginPath(); ctx.arc(x, y - 0.2 * sy, 0.9 * sx, 0, Math.PI * 2); ctx.fill(); break;
+      case 'bag': ctx.fillStyle = '#b5543d'; ctx.fillRect(x - 2 * sx, y - 1.5 * sy, 4 * sx, 3 * sy); break;
+      case 'figure': ctx.fillStyle = '#d4a373'; ctx.beginPath(); ctx.arc(x, y, 1.8 * sx, 0, Math.PI * 2); ctx.fill(); break;
+      default: ctx.fillStyle = '#5a6b73'; ctx.beginPath(); ctx.arc(x, y, 3 * sx, 0, Math.PI * 2); ctx.fill();
     }
     ctx.restore();
   }
 
-  function draw(ctx, sim, width, height) {
-    const sx = width / W;
-    const sy = height / H;
-    ctx.clearRect(0, 0, width, height);
+  function drawStreet(ctx, sx, sy, width, height) {
     const bg = ctx.createLinearGradient(0, 0, width, 0);
     bg.addColorStop(0, '#1c2530');
     bg.addColorStop(1, '#222d36');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, width, height);
-    // acera y calzada
+    // aceras con edificios
     ctx.fillStyle = '#2a343d';
     ctx.fillRect(0, 0, width, 5 * sy);
     ctx.fillRect(0, height - 5 * sy, width, 5 * sy);
+    for (let i = 0; i < 8; i += 1) {
+      const bx = (i * 13 + 2) * sx;
+      ctx.fillStyle = i % 2 ? '#222b33' : '#26303a';
+      ctx.fillRect(bx, 0, 11 * sx, 4.2 * sy);
+      ctx.fillRect(bx, height - 4.2 * sy, 11 * sx, 4.2 * sy);
+      ctx.fillStyle = 'rgba(255,214,120,.45)';
+      for (let w = 0; w < 3; w += 1) {
+        ctx.fillRect(bx + (1.6 + w * 3.3) * sx, 1.2 * sy, 1.4 * sx, 1.4 * sy);
+        ctx.fillRect(bx + (1.6 + w * 3.3) * sx, height - 2.8 * sy, 1.4 * sx, 1.4 * sy);
+      }
+    }
+    // paso de cebra
+    ctx.fillStyle = 'rgba(255,255,255,.1)';
+    for (let k = 0; k < 9; k += 1) ctx.fillRect(56 * sx, (7 + k * 5.2) * sy, 5 * sx, 2.4 * sy);
+    // línea central
     ctx.strokeStyle = 'rgba(240,215,120,.35)';
     ctx.setLineDash([10, 12]);
     ctx.beginPath();
@@ -244,7 +308,23 @@
     ctx.lineTo(width, height / 2);
     ctx.stroke();
     ctx.setLineDash([]);
+    // farolas
+    [18, 50, 82].forEach((lx) => {
+      const glow = ctx.createRadialGradient(lx * sx, 5 * sy, 0, lx * sx, 5 * sy, 14 * sx);
+      glow.addColorStop(0, 'rgba(255,214,120,.22)');
+      glow.addColorStop(1, 'rgba(255,214,120,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect((lx - 14) * sx, 0, 28 * sx, 20 * sy);
+    });
+  }
 
+  const CIV_COLORS = { normal: '#e8d9a0', agitator: '#a31f1f', family: '#f2a7c3', curious: '#9fb0bb' };
+
+  function draw(ctx, sim, width, height) {
+    const sx = width / W;
+    const sy = height / H;
+    ctx.clearRect(0, 0, width, height);
+    drawStreet(ctx, sx, sy, width, height);
     drawProp(ctx, sim, sx, sy);
 
     if (sim.support.includes('sanitario')) {
@@ -253,35 +333,58 @@
       ctx.fillStyle = '#e4453b';
       ctx.fillRect(89.6 * sx, 54 * sy, 1.8 * sx, 3 * sy);
       ctx.fillRect(89 * sx, 54.7 * sy, 3 * sx, 1.6 * sy);
+      ctx.fillStyle = Math.sin(sim.time * 8) > 0 ? '#4fa3f7' : '#e5534b';
+      ctx.fillRect(88 * sx, 52.4 * sy, 5 * sx, 0.9 * sy);
     }
 
     // civiles
     sim.civs.forEach((civ) => {
-      ctx.fillStyle = civ.flee > 0 ? '#c9b98a' : civ.angry ? '#e5534b' : '#e8d9a0';
+      if (civ.gone) return;
+      const base = civ.flee > 0 ? '#c9b98a' : civ.angry && civ.type === 'normal' ? '#e5534b' : CIV_COLORS[civ.type];
+      const radius = civ.type === 'family' ? 1.1 : 1.35;
+      ctx.fillStyle = 'rgba(0,0,0,.25)';
       ctx.beginPath();
-      ctx.arc(civ.x * sx, civ.y * sy, 1.35 * sx, 0, Math.PI * 2);
+      ctx.ellipse(civ.x * sx, (civ.y + 1.2) * sy, radius * sx, 0.5 * sy, 0, 0, Math.PI * 2);
       ctx.fill();
+      ctx.fillStyle = base;
+      ctx.beginPath();
+      ctx.arc(civ.x * sx, civ.y * sy, radius * sx, 0, Math.PI * 2);
+      ctx.fill();
+      if (civ.type === 'agitator') {
+        ctx.strokeStyle = '#ffd0c8';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
     });
 
     // agentes y escudos
-    sim.agents.forEach((agent) => {
+    sim.agents.forEach((agent, index) => {
       const squad = sim.squads.find((item) => item.id === agent.squad);
       const st = sim.stance[agent.squad];
+      const bob = agent.moving ? Math.abs(Math.sin(sim.time * 9 + index)) * 0.4 : 0;
+      const ay = agent.y - bob;
+      ctx.fillStyle = 'rgba(0,0,0,.3)';
+      ctx.beginPath();
+      ctx.ellipse(agent.x * sx, (agent.y + 1.5) * sy, 1.6 * sx, 0.6 * sy, 0, 0, Math.PI * 2);
+      ctx.fill();
       if ((st === 'hold' || st === 'advance' || st === 'disperse') && squad.id === 'uip') {
-        ctx.fillStyle = 'rgba(200,215,235,.55)';
-        ctx.fillRect((agent.x + 1.4) * sx, (agent.y - 1.8) * sy, 0.9 * sx, 3.6 * sy);
+        ctx.fillStyle = 'rgba(200,215,235,.6)';
+        ctx.fillRect((agent.x + 1.5) * sx, (ay - 1.9) * sy, 0.9 * sx, 3.8 * sy);
       }
       ctx.fillStyle = squad.type.color;
       ctx.beginPath();
-      ctx.arc(agent.x * sx, agent.y * sy, 1.6 * sx, 0, Math.PI * 2);
+      ctx.arc(agent.x * sx, ay * sy, 1.6 * sx, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = '#e8f1ff';
       ctx.lineWidth = 1;
       ctx.stroke();
+      ctx.fillStyle = '#e8f1ff';
+      ctx.beginPath();
+      ctx.arc((agent.x + 0.9) * sx, ay * sy, 0.5 * sx, 0, Math.PI * 2);
+      ctx.fill();
       if (agent.label) {
-        ctx.fillStyle = '#e8f1ff';
         ctx.font = '600 10px sans-serif';
-        ctx.fillText(squad.id === 'patrulla' ? 'P' : squad.id === 'apoyo' ? 'A' : 'U', (agent.x - 0.8) * sx, (agent.y - 2.6) * sy);
+        ctx.fillText(squad.id === 'patrulla' ? 'P' : squad.id === 'apoyo' ? 'A' : 'U', (agent.x - 0.8) * sx, (ay - 2.6) * sy);
       }
     });
 

@@ -3,3 +3,10 @@
 Simulador de carrera: Academia (examen, prueba física, prueba práctica) → prácticas con tutor → servicio.
 Cada aviso: llamada, refuerzos a enviar, escena en tiempo real, informe. Las decisiones afectan a reputación,
 expediente (sanciones), suspensión, ascensos o expulsión.
+
+Abrir `index.html` en el navegador (sin internet ni instalación). Se guarda solo en el navegador.
+La versión anterior (mapa) está en `SdP_v1/`.
+
+## Novedades
+- Detenciones: en avisos con sospechoso decides si detienes según los indicios y lees los derechos (detener sin indicios = expediente).
+- Academia: nuevas pruebas de tiro y decisión y primeros auxilios.

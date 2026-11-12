@@ -21,12 +21,13 @@
       suspended: 0,
       concealments: 0,
       academy: {
-        grades: { teorico: null, fisico: null, practico: null },
-        attempts: { teorico: 0, fisico: 0, practico: 0 }
+        grades: { teorico: null, fisico: null, tiro: null, auxilios: null, practico: null },
+        attempts: { teorico: 0, fisico: 0, tiro: 0, auxilios: 0, practico: 0 }
       },
       practicas: { grades: [], round: 1 },
       servicio: { turn: 0, callsDone: 0, served: 0, turnScores: [] },
       end: null,
+      story: { seen: {}, dilemmas: [], lastIncident: null },
       history: [{ kind: 'info', title: 'Ingresas en la Academia', note: 'Comienza tu formación como aspirante.' }]
     };
   }
@@ -54,12 +55,53 @@
     return round1(clamp((distance / 90) * 10, 0, 10));
   }
 
+
+  // --- prueba de tiro y decisión: dianas válidas vs figuras de civiles ---
+  function gradeShooting({ hits, valid, errors }) {
+    const base = valid ? (hits / valid) * 10 : 0;
+    return round1(clamp(base - errors * 2.5, 0, 10));
+  }
+
+  // --- primeros auxilios: ordenar los pasos ---
+  function firstAidScenario() {
+    return pick(C.firstAid);
+  }
+
+  function gradeFirstAid(scenario, order) {
+    const right = order.filter((step, index) => step === scenario.steps[index]).length;
+    return { right, total: scenario.steps.length, score: round1((right / scenario.steps.length) * 10) };
+  }
+
+  // --- detención ---
+  function newArrest() {
+    const evidence = Math.random() < 0.65 ? 'clara' : 'dudosa';
+    return { evidence, clue: pick(C.arrestClues[evidence]) };
+  }
+
+  function rightsOptions() {
+    return shuffle(C.rights);
+  }
+
+  // Aciertos suman, marcar un derecho falso resta más.
+  function gradeRights(selectedIds) {
+    const trueIds = C.rights.filter((item) => item.ok).map((item) => item.id);
+    const good = selectedIds.filter((id) => trueIds.includes(id)).length;
+    const bad = selectedIds.filter((id) => !trueIds.includes(id)).length;
+    const score = round1(clamp(((good - bad * 1.5) / trueIds.length) * 10, 0, 10));
+    return { good, bad, total: trueIds.length, score };
+  }
+
   // --- avisos ---
   function pickIncident(state, forceMaxSev) {
     let maxSev = 3;
     if (state.stage === 'servicio') maxSev = state.rank >= 3 ? 5 : state.rank === 2 ? 4 : 3;
     if (forceMaxSev) maxSev = forceMaxSev;
-    return pick(C.incidents.filter((incident) => incident.sev <= maxSev));
+    const last = state.story && state.story.lastIncident;
+    let pool = C.incidents.filter((incident) => incident.sev <= maxSev && incident.id !== last);
+    if (!pool.length) pool = C.incidents.filter((incident) => incident.sev <= maxSev);
+    const chosen = pick(pool);
+    if (state.story) state.story.lastIncident = chosen.id;
+    return chosen;
   }
 
   // Valora si la respuesta (refuerzos pedidos) se ajusta a la gravedad real.
@@ -89,7 +131,9 @@
     let result = 'Resuelto sin incidencias';
     if (escalated) result = 'No resuelto / escalada';
     else if (outcome.result === 'partial' || usedForce || injuries) result = 'Resuelto con incidencias';
-    return { type: incident.report, result, usedForce, injuries, escalated };
+    const arrestRelevant = Boolean(incident.arrest && outcome.arrest);
+    const arrested = Boolean(outcome.arrest && outcome.arrest.arrested);
+    return { type: incident.report, result, usedForce, injuries, escalated, arrestRelevant, arrested };
   }
 
   function gradeScene(incident, support, outcome) {
@@ -106,13 +150,40 @@
     if (outcome.trustPenalty > 0) { score -= outcome.trustPenalty; notes.push('Dispersaste a la multitud: uso de fuerza que cuesta confianza.'); }
     if (outcome.pushUsed) { score -= 1; notes.push('Avanzaste sobre una multitud ya tensa y la provocaste.'); }
     if (outcome.disperseUsed && incident.sev <= 2) { score -= 2; notes.push('Dispersar a una multitud en un aviso menor es desproporcionado.'); }
+    let illegalArrest = false;
+    let rightsBad = false;
+    if (incident.arrest && outcome.arrest) {
+      const arrest = outcome.arrest;
+      if (arrest.arrested && arrest.evidence === 'dudosa') {
+        score -= 3; illegalArrest = true;
+        notes.push('Detuviste sin indicios suficientes: podría ser una detención ilegal.');
+      } else if (!arrest.arrested && arrest.evidence === 'clara') {
+        score -= 2;
+        notes.push('Había indicios claros y no detuviste al sospechoso.');
+      } else if (arrest.arrested) {
+        score += 0.5;
+        notes.push('Detención justificada.');
+        if (arrest.rightsScore != null) {
+          score += (arrest.rightsScore - 5) / 5;
+          if (arrest.rightsScore < 5) { rightsBad = true; notes.push('Informaste mal de los derechos del detenido.'); }
+          else notes.push('Informaste bien de sus derechos.');
+        }
+      } else {
+        score += 0.5;
+        notes.push('Sin indicios no se detiene: se identifica y se denuncia. Bien decidido.');
+      }
+    }
+    if (outcome.familiesAtRisk > 0) { score -= 1; notes.push('Había familias en la zona cuando la situación se volvió peligrosa.'); }
     const truth = buildTruth(incident, support, outcome);
+    truth.illegalArrest = illegalArrest;
+    truth.rightsBad = rightsBad;
     return { score: round1(clamp(score, 0, 10)), notes, truth, response: resp.score };
   }
 
   // El informe se compara con lo que pasó de verdad.
   function gradeReport(truth, report) {
     let points = 0;
+    let max = 10;
     const notes = [];
     let concealed = false;
     if (report.type === truth.type) points += 2; else notes.push(`Tipo de hecho incorrecto (era: ${truth.type}).`);
@@ -123,11 +194,17 @@
     if ((report.injuries === 'Sí') === truth.injuries) points += 2;
     else if (truth.injuries) { notes.push('No declaraste que hubo heridos.'); concealed = true; }
     else notes.push('Declaraste heridos que no los hubo.');
+    if (truth.arrestRelevant) {
+      max = 12;
+      if ((report.arrest === 'Sí') === truth.arrested) points += 2;
+      else if (truth.arrested) { notes.push('No declaraste la detención.'); concealed = true; }
+      else notes.push('Declaraste una detención que no se produjo.');
+    }
     const length = (report.text || '').trim().length;
     if (length >= 70) points += 2;
     else if (length >= 30) { points += 1; notes.push('La narración es demasiado breve.'); }
     else notes.push('Falta la narración de los hechos.');
-    return { score: points, notes, concealed };
+    return { score: round1((points / max) * 10), notes, concealed };
   }
 
   // --- academia ---
@@ -138,7 +215,7 @@
   function applyAcademy(state, module, score) {
     const academy = state.academy;
     academy.attempts[module] += 1;
-    const names = { teorico: 'examen teórico', fisico: 'prueba física', practico: 'prueba práctica' };
+    const names = { teorico: 'examen teórico', fisico: 'prueba física', tiro: 'prueba de tiro y decisión', auxilios: 'prueba de primeros auxilios', practico: 'prueba práctica' };
     if (score >= PASS) {
       academy.grades[module] = score;
       log(state, 'good', `Apto: ${names[module]}`, `Nota ${score}.`);
@@ -200,6 +277,8 @@
     if (sceneGrade.truth.escalated && sceneGrade.truth.injuries) { strike = true; notes.push('Expediente: escalada con heridos.'); }
     if (support.includes('uip') && incident.sev <= 2 && sceneGrade.truth.escalated) { strike = true; notes.push('Expediente: respuesta desproporcionada.'); }
     if (outcome.trustPenalty >= 2) { strike = true; notes.push('Expediente: uso reiterado de dispersión.'); }
+    if (sceneGrade.truth.illegalArrest) { strike = true; notes.push('Expediente: detención sin indicios suficientes.'); }
+    if (sceneGrade.truth.rightsBad) { strike = true; notes.push('Expediente: derechos del detenido mal informados.'); }
     if (strike) state.strikes += 1;
     state.servicio.served += 1;
     state.servicio.callsDone += 1;
@@ -231,9 +310,11 @@
       const scores = state.servicio.turnScores.slice(-CALLS_PER_TURN);
       result.turnEnded = true;
       result.turnAvg = round1(scores.reduce((a, b) => a + b, 0) / scores.length);
-      if (state.rank < 3 && state.rep >= 75 && state.servicio.served >= 8 && state.strikes <= 1) {
+      const need = state.rank >= 3 ? 14 : 8;
+      if (state.rank < 4 && state.rep >= 75 && state.servicio.served >= need && state.strikes <= 1) {
         state.rank += 1;
         result.promoted = true;
+        if (state.rank === 4) state.stage = 'jefe';
         log(state, 'good', 'Ascenso', `Ascendes a ${C.ranks[state.rank]}.`);
       }
     }
@@ -251,6 +332,75 @@
     return true;
   }
 
+
+  // --- historia ---
+  const castName = (who) => C.cast[who] || who;
+  const fillName = (text, state) => text.replace(/\{name\}/g, state.name);
+
+  // Devuelve el capítulo de la etapa actual si aún no se ha visto (y lo marca como visto).
+  function nextChapter(state) {
+    const chapter = C.chapters[state.stage];
+    if (!chapter || !state.story || state.story.seen[state.stage]) return null;
+    state.story.seen[state.stage] = true;
+    return {
+      title: chapter.title,
+      lines: chapter.lines.map((line) => ({ who: castName(line.who), text: fillName(line.text, state) }))
+    };
+  }
+
+  // Reacción de un personaje a cómo ha ido un servicio.
+  function reaction(state, avg, flags) {
+    const f = flags || {};
+    let who;
+    let band;
+    if (state.stage === 'academia') who = 'instructor';
+    else if (state.stage === 'practicas') who = 'tutor';
+    else who = f.concealed || avg < PASS ? 'jefe' : 'companera';
+    if (f.concealed) band = 'conceal';
+    else if (avg >= 8) band = 'great';
+    else if (avg >= PASS) band = 'ok';
+    else band = 'bad';
+    const bank = C.reactions[who] || {};
+    const lines = bank[band] || (who === 'jefe' ? bank.bad : bank.ok) || bank.great || [];
+    if (!lines.length) return null;
+    return { who: castName(who), text: fillName(pick(lines), state) };
+  }
+
+  function pickDilemma(state) {
+    const seen = state.story.dilemmas;
+    let pool = C.dilemmas.filter((item) => !seen.includes(item.id));
+    if (!pool.length) { state.story.dilemmas = []; pool = C.dilemmas; }
+    const chosen = pick(pool);
+    state.story.dilemmas.push(chosen.id);
+    return { ...chosen, who: castName(chosen.who) };
+  }
+
+  function applyDilemma(state, dilemmaId, choiceIndex) {
+    const dilemma = C.dilemmas.find((item) => item.id === dilemmaId);
+    const choice = dilemma && dilemma.choices[choiceIndex];
+    if (!choice) return { ok: false };
+    state.rep = clamp(state.rep + choice.rep, 0, 100);
+    state.strikes += choice.strikes;
+    state.concealments += choice.concealments;
+    log(state, choice.rep >= 0 && choice.strikes === 0 ? 'good' : 'bad', dilemma.title, choice.result);
+    const result = { ok: true, text: choice.result, repDelta: choice.rep, strikes: choice.strikes, expelled: false };
+    if (state.concealments >= 2 || state.strikes >= 5) {
+      state.end = {
+        kind: 'expulsion',
+        reason: state.concealments >= 2
+          ? 'Dos informes o actuaciones con datos ocultados. Asuntos Internos te expulsa del cuerpo.'
+          : 'Acumulas demasiadas sanciones. Se abre expediente de separación del servicio.'
+      };
+      state.stage = 'baja';
+      result.expelled = true;
+    } else if (state.strikes >= 3 && state.suspended === 0) {
+      state.suspended = 2;
+      log(state, 'bad', 'Suspensión de empleo', 'Acumulas 3 sanciones: quedas suspendido 2 turnos.');
+      result.suspended = true;
+    }
+    return result;
+  }
+
   // --- guardado ---
   function save(state) {
     try { window.localStorage.setItem(C.SAVE_KEY, JSON.stringify(state)); return true; } catch (error) { return false; }
@@ -262,6 +412,11 @@
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       if (!parsed || parsed.v !== 1 || !parsed.academy) return null;
+      if (!parsed.story) parsed.story = { seen: {}, dilemmas: [], lastIncident: null };
+      ['tiro', 'auxilios'].forEach((key) => {
+        if (!(key in parsed.academy.grades)) parsed.academy.grades[key] = parsed.stage === 'academia' ? null : 5;
+        if (!(key in parsed.academy.attempts)) parsed.academy.attempts[key] = 0;
+      });
       return parsed;
     } catch (error) {
       return null;
@@ -276,6 +431,8 @@
     PASS, MAX_ATTEMPTS, PRACTICAS_TOTAL, CALLS_PER_TURN,
     newGame, examQuestions, gradeExam, gradeRun, pickIncident, responseScore, buildTruth,
     gradeScene, gradeReport, applyAcademy, applyPractica, applyService, serveSuspension,
+    nextChapter, reaction, pickDilemma, applyDilemma,
+    gradeShooting, firstAidScenario, gradeFirstAid, newArrest, rightsOptions, gradeRights,
     save, load, clearSave
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
